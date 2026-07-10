@@ -7,8 +7,10 @@
     <FrameLayout
         android:id="@+id/video_layout"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:layout_gravity="center" />
 
+    <!-- Прозрачный слой для жестов: свайп = перемотка, тап = показать/скрыть контролы -->
     <View
         android:id="@+id/gesture_overlay"
         android:layout_width="match_parent"
@@ -20,12 +22,12 @@
         android:layout_height="wrap_content"
         android:layout_gravity="center"
         android:background="@drawable/overlay_bg"
-        android:paddingLeft="20dp"
-        android:paddingRight="20dp"
-        android:paddingTop="12dp"
-        android:paddingBottom="12dp"
+        android:paddingLeft="18dp"
+        android:paddingRight="18dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp"
         android:textColor="#FFFFFF"
-        android:textSize="20sp"
+        android:textSize="18sp"
         android:visibility="gone" />
 
     <LinearLayout
@@ -35,26 +37,30 @@
         android:layout_gravity="bottom"
         android:orientation="vertical"
         android:background="@drawable/controls_scrim"
-        android:padding="12dp">
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:paddingTop="18dp"
+        android:paddingBottom="12dp">
 
         <TextView
             android:id="@+id/time"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginLeft="4dp"
+            android:text="00:00 / 00:00"
             android:textColor="#FFFFFF"
-            android:textSize="14sp"
-            android:text="00:00 / 00:00" />
+            android:textSize="13sp" />
 
         <SeekBar
             android:id="@+id/seek"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:layout_marginBottom="4dp" />
+            android:layout_marginTop="2dp" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
             android:orientation="horizontal"
             android:gravity="center">
 
@@ -63,7 +69,6 @@
                 style="@style/ControlButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_margin="4dp"
                 android:text="↺ 10" />
 
             <Button
@@ -71,7 +76,6 @@
                 style="@style/ControlButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_margin="4dp"
                 android:text="⏸" />
 
             <Button
@@ -79,7 +83,6 @@
                 style="@style/ControlButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_margin="4dp"
                 android:text="10 ↻" />
 
             <Button
@@ -87,7 +90,6 @@
                 style="@style/ControlButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_margin="4dp"
                 android:text="+1:30" />
 
             <Button
@@ -95,7 +97,6 @@
                 style="@style/ControlButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_margin="4dp"
                 android:text="1.0x" />
 
             <Button
@@ -103,8 +104,10 @@
                 style="@style/ControlButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_margin="4dp"
                 android:text="⬚" />
+
         </LinearLayout>
+
     </LinearLayout>
+
 </FrameLayout>
