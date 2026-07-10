@@ -12,8 +12,7 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:background="@color/primary"
-        android:padding="10dp"
-        android:gravity="center_vertical">
+        android:padding="10dp">
 
         <EditText
             android:id="@+id/search"
@@ -21,58 +20,65 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:background="@drawable/edit_bg"
-            android:hint="@string/search_hint"
+            android:hint="Поиск по файлам"
             android:imeOptions="actionSearch"
             android:inputType="text"
             android:maxLines="1"
-            android:padding="10dp"
+            android:padding="12dp"
             android:textColor="@color/text_primary"
             android:textColorHint="@color/text_secondary" />
 
         <Button
             android:id="@+id/search_btn"
-            style="@style/ControlButton"
+            style="@style/PrimaryButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginLeft="8dp"
-            android:text="@string/search_button" />
-
+            android:text="Найти" />
     </LinearLayout>
 
     <TextView
         android:id="@+id/header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:padding="12dp"
-        android:background="@color/surface"
-        android:textColor="@color/text_secondary"
-        android:textStyle="bold"
-        android:textSize="14sp"
+        android:background="@color/primary_dark"
+        android:paddingLeft="14dp"
+        android:paddingRight="14dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
         android:singleLine="true"
-        android:ellipsize="start" />
+        android:ellipsize="start"
+        android:text="/"
+        android:textColor="@color/header_text"
+        android:textSize="14sp" />
 
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:background="@color/divider" />
-
-    <TextView
-        android:id="@+id/empty"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:padding="24dp"
-        android:gravity="center"
-        android:textColor="@color/text_secondary"
-        android:textSize="14sp"
-        android:visibility="gone" />
-
-    <ListView
-        android:id="@+id/list"
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layoutAnimation="@anim/layout_anim"
-        android:divider="@color/divider"
-        android:dividerHeight="1dp" />
+        android:layout_weight="1">
 
+        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+            android:id="@+id/swipe"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <ListView
+                android:id="@+id/list"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:divider="@color/divider"
+                android:dividerHeight="1dp"
+                android:drawSelectorOnTop="false" />
+        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+
+        <TextView
+            android:id="@+id/empty"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:text="Пусто"
+            android:textColor="@color/text_secondary"
+            android:textSize="16sp"
+            android:visibility="gone" />
+    </FrameLayout>
 </LinearLayout>

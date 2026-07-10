@@ -7,30 +7,22 @@ on:
 
 jobs:
   server:
-    name: Сборка media-server (aarch64)
+    name: Сборка Rust-сервера (aarch64)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
-
-      - name: Android NDK
-        uses: nttld/setup-ndk@v1
+      - uses: nttld/setup-ndk@v1
         with:
           ndk-version: r26d
-
       - name: cargo-ndk
         run: cargo install cargo-ndk
-
-      - name: Build
+      - name: build
         working-directory: server
         run: cargo ndk -t arm64-v8a build --release
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: media-server-aarch64
           path: server/target/aarch64-linux-android/release/media-server
@@ -40,27 +32,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-
-      - name: Build release APK
+      - name: assembleRelease
         working-directory: app
         run: gradle assembleRelease --no-daemon --stacktrace
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: tablet-player-apk
           path: app/app/build/outputs/apk/release/app-release.apk
