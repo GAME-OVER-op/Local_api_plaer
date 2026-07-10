@@ -11,6 +11,8 @@ import java.util.Set;
 public class Store {
     static final String KEY_WATCHED = "watched";
     static final String KEY_POS = "positions";
+    static final String KEY_VOLUME = "boost_volume";
+    static final String KEY_ASPECT = "aspect_mode";
 
     public static Set<String> watched(Context c) {
         Set<String> s = new HashSet<>();
@@ -63,5 +65,21 @@ public class Store {
             App.prefs(c).edit().putString(KEY_POS, o.toString()).apply();
         } catch (Exception ignored) {
         }
+    }
+
+    public static int getVolume(Context c, int def) {
+        return App.prefs(c).getInt(KEY_VOLUME, def);
+    }
+
+    public static void setVolume(Context c, int v) {
+        App.prefs(c).edit().putInt(KEY_VOLUME, v).apply();
+    }
+
+    public static int getAspect(Context c, int def) {
+        return App.prefs(c).getInt(KEY_ASPECT, def);
+    }
+
+    public static void setAspect(Context c, int v) {
+        App.prefs(c).edit().putInt(KEY_ASPECT, v).apply();
     }
 }

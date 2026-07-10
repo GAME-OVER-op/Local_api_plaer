@@ -108,6 +108,8 @@ public class PlayerActivity extends AppCompatActivity {
             }
         }
 
+        volume = Store.getVolume(this, 100);
+        aspectIdx = Store.getAspect(this, 0);
         videoLayout = findViewById(R.id.video_layout);
         controls = findViewById(R.id.controls);
         gestureOverlay = findViewById(R.id.gesture_overlay);
@@ -189,6 +191,7 @@ public class PlayerActivity extends AppCompatActivity {
                     pendingResumeMs = 0;
                 }
                 player.setVolume(volume);
+                applyAspect();
                 updatePlayIcon();
                 updatePlaybackState();
                 break;
@@ -474,6 +477,7 @@ public class PlayerActivity extends AppCompatActivity {
     private void cycleAspect() {
         aspectIdx = (aspectIdx + 1) % aspectNames.length;
         applyAspect();
+        Store.setAspect(this, aspectIdx);
         flashInfo(aspectNames[aspectIdx]);
     }
 
@@ -553,6 +557,7 @@ public class PlayerActivity extends AppCompatActivity {
                     if (nv > 200) nv = 200;
                     volume = nv;
                     if (player != null) player.setVolume(nv);
+                    Store.setVolume(PlayerActivity.this, nv);
                     flashInfoSticky("🔊 " + nv + "%");
                 }
                 return true;
