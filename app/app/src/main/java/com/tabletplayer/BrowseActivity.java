@@ -63,6 +63,12 @@ public class BrowseActivity extends AppCompatActivity {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
     private FileAdapter adapter;
+    private boolean queueMode = false;
+    private final List<String> queuePaths = new ArrayList<>();
+    private final List<String> queueNames = new ArrayList<>();
+    private View queueBar;
+    private TextView queueInfo;
+    private Button queueBtn, queueClear, queuePlay;
 
     private final BroadcastReceiver cancelReceiver = new BroadcastReceiver() {
         @Override
@@ -94,6 +100,15 @@ public class BrowseActivity extends AppCompatActivity {
         sortBtn = findViewById(R.id.sort_btn);
         swipe = findViewById(R.id.swipe);
         Button searchBtn = findViewById(R.id.search_btn);
+        queueBar = findViewById(R.id.queue_bar);
+        queueInfo = findViewById(R.id.queue_info);
+        queueBtn = findViewById(R.id.queue_btn);
+        queueClear = findViewById(R.id.queue_clear);
+        queuePlay = findViewById(R.id.queue_play);
+        queueBtn.setOnClickListener(v -> { queueMode = !queueMode; updateQueueUi(); adapter.notifyDataSetChanged(); });
+        queueClear.setOnClickListener(v -> { queuePaths.clear(); queueNames.clear(); updateQueueUi(); adapter.notifyDataSetChanged(); });
+        queuePlay.setOnClickListener(v -> playQueue());
+        updateQueueUi();
 
         adapter = new FileAdapter();
         listView.setAdapter(adapter);
@@ -228,6 +243,10 @@ public class BrowseActivity extends AppCompatActivity {
     }
 
     private void onItemClick(Entry e) {
+        if (queueMode && !e.isDir && Util.isVideo(e.name)) {
+            toggleQueue(e);
+            return;
+        }
         if (e.isDir) {
             searchBox.setText("");
             loadList(e.fullPath);
@@ -242,6 +261,41 @@ public class BrowseActivity extends AppCompatActivity {
                     else startDownload(e);
                 })
                 .show();
+    }
+
+    private void toggleQueue(Entry e) {
+        int idx = queuePaths.indexOf(e.fullPath);
+        if (idx >= 0) {
+            queuePaths.remove(idx);
+            queueNames.remove(idx);
+        } else {
+            queuePaths.add(e.fullPath);
+            queueNames.add(e.name);
+        }
+        updateQueueUi();
+        adapter.notifyDataSetChanged();
+    }
+
+    private void updateQueueUi() {
+        if (queueBtn != null) queueBtn.setText(queueMode ? "Очередь ✓" : "Очередь");
+        if (queueBar != null) queueBar.setVisibility(queueMode ? View.VISIBLE : View.GONE);
+        if (queueInfo != null) queueInfo.setText("В очереди: " + queuePaths.size());
+    }
+
+    private void playQueue() {
+        if (queuePaths.isEmpty()) {
+            Toast.makeText(this, "Очередь пуста — отметьте видео по порядку", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Intent i = new Intent(this, PlayerActivity.class);
+        i.putExtra("base", base);
+        i.putExtra("path", queuePaths.get(0));
+        i.putExtra("name", queueNames.get(0));
+        i.putExtra("folder", "");
+        i.putExtra("queue_paths", queuePaths.toArray(new String[0]));
+        i.putExtra("queue_names", queueNames.toArray(new String[0]));
+        startActivity(i);
+        overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }
 
     private void openPlayer(Entry e) {
@@ -435,6 +489,18 @@ public class BrowseActivity extends AppCompatActivity {
             }
             boolean watched = !e.isDir && video && Store.isWatched(BrowseActivity.this, e.fullPath);
             check.setVisibility(watched ? View.VISIBLE : View.GONE);
+            TextView queueNum = convert.findViewById(R.id.item_queue);
+            if (queueMode && !e.isDir && video) {
+                int qi = queuePaths.indexOf(e.fullPath);
+                if (qi >= 0) {
+                    queueNum.setText(String.valueOf(qi + 1));
+                    queueNum.setVisibility(View.VISIBLE);
+                } else {
+                    queueNum.setVisibility(View.GONE);
+                }
+            } else {
+                queueNum.setVisibility(View.GONE);
+            }
             return convert;
         }
     }
