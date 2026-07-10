@@ -10,8 +10,7 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:background="@color/primary"
-        android:padding="10dp"
-        android:gravity="center_vertical">
+        android:padding="8dp">
 
         <EditText
             android:id="@+id/search"
@@ -19,40 +18,31 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:background="@drawable/edit_bg"
-            android:hint="@string/search_hint"
+            android:padding="10dp"
+            android:hint="Поиск по всем файлам..."
             android:imeOptions="actionSearch"
             android:inputType="text"
-            android:maxLines="1"
-            android:padding="10dp"
-            android:textColor="@color/text_primary"
-            android:textColorHint="@color/text_secondary" />
+            android:singleLine="true"
+            android:textColor="@color/text_primary" />
 
         <Button
             android:id="@+id/search_btn"
             style="@style/ControlButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginLeft="8dp"
-            android:text="@string/search_button" />
-
+            android:layout_marginLeft="6dp"
+            android:text="Найти" />
     </LinearLayout>
 
     <TextView
         android:id="@+id/header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:padding="12dp"
-        android:background="@color/surface"
-        android:textColor="@color/text_secondary"
-        android:textStyle="bold"
-        android:textSize="14sp"
-        android:singleLine="true"
-        android:ellipsize="start" />
-
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:background="@color/divider" />
+        android:background="@color/primary_dark"
+        android:padding="10dp"
+        android:textColor="@color/header_text"
+        android:textSize="13sp"
+        android:text="/" />
 
     <TextView
         android:id="@+id/empty"
@@ -61,16 +51,13 @@
         android:padding="24dp"
         android:gravity="center"
         android:textColor="@color/text_secondary"
-        android:textSize="14sp"
+        android:text="Пусто"
         android:visibility="gone" />
 
     <ListView
         android:id="@+id/list"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layoutAnimation="@anim/layout_anim"
+        android:layout_height="match_parent"
         android:divider="@color/divider"
         android:dividerHeight="1dp" />
-
 </LinearLayout>
