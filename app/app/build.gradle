@@ -8,26 +8,25 @@ android {
 
     defaultConfig {
         applicationId "com.tabletplayer"
-        // Планшет: Android 4.4.2 (API 19). libVLC 3.x требует минимум API 17.
         minSdk 19
-        // targetSdk 22 => разрешения выдаются при установке (нет диалогов рантайма),
-        // и разрешён обычный HTTP (cleartext) — удобно для старого устройства.
         targetSdk 22
         versionCode 1
         versionName "1.0"
 
         ndk {
-            // Планшет на ARMv7 — тянем только нужный ABI, чтобы APK был меньше.
             abiFilters 'armeabi-v7a'
+        }
+
+        // Векторные иконки на API 19 работают через support-library (AppCompat + srcCompat).
+        vectorDrawables {
+            useSupportLibrary true
         }
     }
 
     buildTypes {
         release {
-            // R8: сжатие и оптимизация кода + удаление неиспользуемых ресурсов.
             minifyEnabled true
             shrinkResources true
-            // Подпись debug-ключом: release-APK ставится без собственного keystore.
             signingConfig signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
@@ -48,6 +47,7 @@ android {
 }
 
 dependencies {
-    // libVLC для Android (поддерживает практически любые форматы и перемотку).
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'org.videolan.android:libvlc-all:3.5.1'
 }

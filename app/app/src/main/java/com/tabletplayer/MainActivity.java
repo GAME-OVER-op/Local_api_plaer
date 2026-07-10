@@ -1,10 +1,11 @@
 package com.tabletplayer;
 
-import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.text.TextUtils;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
@@ -14,11 +15,13 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AppCompatActivity;
+
 import org.json.JSONArray;
 
 import java.util.ArrayList;
 
-public class MainActivity extends Activity {
+public class MainActivity extends AppCompatActivity {
 
     private static final String PREFS = "tablet_player";
     private static final String KEY_IP = "ip";
@@ -70,6 +73,22 @@ public class MainActivity extends Activity {
         });
 
         loadHistory();
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.main_menu, menu);
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        if (item.getItemId() == R.id.action_settings) {
+            startActivity(new Intent(this, SettingsActivity.class));
+            overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left);
+            return true;
+        }
+        return super.onOptionsItemSelected(item);
     }
 
     @Override

@@ -1,13 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Планшет Плеер</string>
-    <string name="connect_title">Подключение к серверу</string>
-    <string name="connect_subtitle">Укажите адрес устройства, где запущен media-server</string>
-    <string name="ip_label">IP-адрес</string>
-    <string name="port_label">Порт</string>
-    <string name="connect_button">Подключиться</string>
-    <string name="history_title">Недавние подключения</string>
-    <string name="history_empty">Пока пусто — подключитесь к серверу</string>
-    <string name="search_hint">Поиск по всем файлам…</string>
-    <string name="search_button">Найти</string>
+    <string name="settings">Настройки</string>
+    <string name="menu_settings">Настройки</string>
+    <string name="dark_theme">Тёмная тема</string>
+    <string name="dark_theme_hint">Переключает оформление всего приложения между светлой и тёмной.</string>
 </resources>

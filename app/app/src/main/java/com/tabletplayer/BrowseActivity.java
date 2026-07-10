@@ -1,6 +1,5 @@
 package com.tabletplayer;
 
-import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
@@ -21,6 +20,9 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -35,16 +37,18 @@ import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-public class BrowseActivity extends Activity {
+public class BrowseActivity extends AppCompatActivity {
 
     private String base;
     private String path;
     private boolean searchMode = false;
+    private String lastQuery = "";
 
     private ListView listView;
     private TextView header;
     private TextView empty;
     private EditText searchField;
+    private SwipeRefreshLayout swipe;
     private EntryAdapter adapter;
     private final ArrayList<Entry> entries = new ArrayList<Entry>();
 
@@ -71,7 +75,20 @@ public class BrowseActivity extends Activity {
         header = (TextView) findViewById(R.id.header);
         empty = (TextView) findViewById(R.id.empty);
         searchField = (EditText) findViewById(R.id.search);
+        swipe = (SwipeRefreshLayout) findViewById(R.id.swipe);
         Button searchBtn = (Button) findViewById(R.id.search_btn);
+
+        swipe.setColorSchemeResources(R.color.primary, R.color.accent);
+        swipe.setOnRefreshListener(new SwipeRefreshLayout.OnRefreshListener() {
+            @Override
+            public void onRefresh() {
+                if (searchMode && !TextUtils.isEmpty(lastQuery)) {
+                    fetchInto(base + "/search?q=" + encode(lastQuery), true);
+                } else {
+                    fetchInto(base + "/list?path=" + encode(path), false);
+                }
+            }
+        });
 
         adapter = new EntryAdapter();
         listView.setAdapter(adapter);
@@ -125,14 +142,13 @@ public class BrowseActivity extends Activity {
         intent.putExtra("url", url);
         intent.putExtra("title", e.name);
         startActivity(intent);
-        overridePendingTransition(R.anim.fade_in, android.R.anim.fade_out);
+        overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }
 
     private void loadList() {
         searchMode = false;
         header.setText(path.isEmpty() ? "/" : "/" + path);
-        final String url = base + "/list?path=" + encode(path);
-        fetchInto(url, false);
+        fetchInto(base + "/list?path=" + encode(path), false);
     }
 
     private void doSearch() {
@@ -143,9 +159,9 @@ public class BrowseActivity extends Activity {
             return;
         }
         searchMode = true;
+        lastQuery = q;
         header.setText("Поиск: " + q);
-        final String url = base + "/search?q=" + encode(q);
-        fetchInto(url, true);
+        fetchInto(base + "/search?q=" + encode(q), true);
     }
 
     private void fetchInto(final String url, final boolean isSearch) {
@@ -179,6 +195,7 @@ public class BrowseActivity extends Activity {
                 main.post(new Runnable() {
                     @Override
                     public void run() {
+                        swipe.setRefreshing(false);
                         if (err != null) {
                             Toast.makeText(BrowseActivity.this, "Ошибка: " + err, Toast.LENGTH_LONG).show();
                         }
