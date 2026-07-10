@@ -66,6 +66,7 @@ public class PlayerActivity extends AppCompatActivity {
     private final List<String> episodePaths = new ArrayList<>();
     private final List<String> episodeNames = new ArrayList<>();
     private int episodeIndex = -1;
+    private boolean hasQueue = false;
 
     private MediaSessionCompat session;
     private AudioManager audioManager;
@@ -95,6 +96,17 @@ public class PlayerActivity extends AppCompatActivity {
         name = getIntent().getStringExtra("name");
         folder = getIntent().getStringExtra("folder");
         if (folder == null) folder = "";
+
+        String[] queuePathsExtra = getIntent().getStringArrayExtra("queue_paths");
+        String[] queueNamesExtra = getIntent().getStringArrayExtra("queue_names");
+        if (queuePathsExtra != null && queueNamesExtra != null && queuePathsExtra.length > 0
+                && queuePathsExtra.length == queueNamesExtra.length) {
+            hasQueue = true;
+            for (int qi = 0; qi < queuePathsExtra.length; qi++) {
+                episodePaths.add(queuePathsExtra[qi]);
+                episodeNames.add(queueNamesExtra[qi]);
+            }
+        }
 
         videoLayout = findViewById(R.id.video_layout);
         controls = findViewById(R.id.controls);
@@ -146,7 +158,8 @@ public class PlayerActivity extends AppCompatActivity {
         initPlayer();
         setupSession();
         askResume();
-        fetchEpisodes();
+        if (hasQueue) updateEpisodeIndex();
+        else fetchEpisodes();
     }
 
     private void initPlayer() {

@@ -44,6 +44,18 @@
     </LinearLayout>
 
     <TextView
+        android:id="@+id/item_queue"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_marginLeft="8dp"
+        android:gravity="center"
+        android:background="@drawable/queue_badge"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <TextView
         android:id="@+id/item_check"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
