@@ -158,36 +158,42 @@ public class PlayerActivity extends AppCompatActivity {
         player = new MediaPlayer(libVLC);
         player.attachViews(videoLayout, null, false, false);
         player.setEventListener(event -> {
-            switch (event.type) {
-                case MediaPlayer.Event.Playing:
-                    reconnectAttempts = 0;
-                    started = true;
-                    hideBuffering();
-                    if (pendingResumeMs > 0) {
-                        player.setTime(pendingResumeMs);
-                        pendingResumeMs = 0;
-                    }
-                    player.setVolume(volume);
-                    updatePlayIcon();
-                    updatePlaybackState();
-                    break;
-                case MediaPlayer.Event.Buffering:
-                    float pct = event.getBuffering();
-                    if (pct >= 100f) hideBuffering();
-                    else if (!started) showBuffering("Подготовка видео…");
-                    break;
-                case MediaPlayer.Event.Paused:
-                    updatePlayIcon();
-                    updatePlaybackState();
-                    break;
-                case MediaPlayer.Event.EndReached:
-                    onEnd();
-                    break;
-                case MediaPlayer.Event.EncounteredError:
-                    onError();
-                    break;
-            }
+            final int type = event.type;
+            final float pct = (type == MediaPlayer.Event.Buffering) ? event.getBuffering() : 0f;
+            ui.post(() -> handlePlayerEvent(type, pct));
         });
+    }
+
+    private void handlePlayerEvent(int type, float pct) {
+        if (player == null) return;
+        switch (type) {
+            case MediaPlayer.Event.Playing:
+                reconnectAttempts = 0;
+                started = true;
+                hideBuffering();
+                if (pendingResumeMs > 0) {
+                    player.setTime(pendingResumeMs);
+                    pendingResumeMs = 0;
+                }
+                player.setVolume(volume);
+                updatePlayIcon();
+                updatePlaybackState();
+                break;
+            case MediaPlayer.Event.Buffering:
+                if (pct >= 100f) hideBuffering();
+                else if (!started) showBuffering("Подготовка видео…");
+                break;
+            case MediaPlayer.Event.Paused:
+                updatePlayIcon();
+                updatePlaybackState();
+                break;
+            case MediaPlayer.Event.EndReached:
+                onEnd();
+                break;
+            case MediaPlayer.Event.EncounteredError:
+                onError();
+                break;
+        }
     }
 
     private void setupSession() {
