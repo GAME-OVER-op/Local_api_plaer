@@ -10,17 +10,10 @@ android {
         applicationId "com.tabletplayer"
         minSdk 19
         targetSdk 22
-        versionCode 1
-        versionName "1.0"
-
-        ndk {
-            abiFilters 'armeabi-v7a'
-        }
-
-        // Векторные иконки на API 19 работают через support-library (AppCompat + srcCompat).
-        vectorDrawables {
-            useSupportLibrary true
-        }
+        versionCode 4
+        versionName "4.0"
+        ndk { abiFilters 'armeabi-v7a' }
+        vectorDrawables { useSupportLibrary true }
     }
 
     buildTypes {
@@ -29,9 +22,6 @@ android {
             shrinkResources true
             signingConfig signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-        }
-        debug {
-            minifyEnabled false
         }
     }
 
@@ -49,5 +39,6 @@ android {
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+    implementation 'androidx.media:media:1.4.3'
     implementation 'org.videolan.android:libvlc-all:3.5.1'
 }

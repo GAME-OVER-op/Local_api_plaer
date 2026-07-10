@@ -37,20 +37,38 @@
             android:text="Найти" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/header"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:orientation="horizontal"
         android:background="@color/primary_dark"
+        android:gravity="center_vertical"
         android:paddingLeft="14dp"
-        android:paddingRight="14dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp"
-        android:singleLine="true"
-        android:ellipsize="start"
-        android:text="/"
-        android:textColor="@color/header_text"
-        android:textSize="14sp" />
+        android:paddingRight="6dp">
+
+        <TextView
+            android:id="@+id/header"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:singleLine="true"
+            android:ellipsize="start"
+            android:text="/"
+            android:textColor="@color/header_text"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/sort_btn"
+            style="@style/ControlButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minWidth="0dp"
+            android:text="Имя ↑"
+            android:textColor="@color/header_text"
+            android:textSize="13sp" />
+    </LinearLayout>
 
     <FrameLayout
         android:layout_width="match_parent"

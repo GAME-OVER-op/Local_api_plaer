@@ -42,4 +42,14 @@
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />
     </LinearLayout>
+
+    <TextView
+        android:id="@+id/item_check"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginLeft="8dp"
+        android:text="✓"
+        android:textColor="@color/accent"
+        android:textSize="20sp"
+        android:visibility="gone" />
 </LinearLayout>
