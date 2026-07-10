@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Планшет Плеер</string>
+    <string name="connect_title">Подключение к устройству</string>
+    <string name="ip_label">IP-адрес устройства</string>
+    <string name="port_label">Порт</string>
+    <string name="connect_button">Подключиться</string>
+</resources>
