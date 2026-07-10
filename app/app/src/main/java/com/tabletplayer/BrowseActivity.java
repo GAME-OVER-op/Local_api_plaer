@@ -1,18 +1,18 @@
 package com.tabletplayer;
 
-import android.app.AlertDialog;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.DialogInterface;
+import android.content.IntentFilter;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
-import android.text.TextUtils;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.inputmethod.InputMethodManager;
+import android.view.inputmethod.EditorInfo;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -20,40 +20,57 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class BrowseActivity extends AppCompatActivity {
+    static final String ACTION_CANCEL = "com.tabletplayer.CANCEL_DL";
+    static final ConcurrentHashMap<Integer, Boolean> CANCELLED = new ConcurrentHashMap<>();
+    static final AtomicInteger NOTIF_SEQ = new AtomicInteger(1000);
 
     private String base;
-    private String path;
-    private boolean searchMode = false;
+    private String path = "";
+    private boolean ascending = true;
+    private boolean searching = false;
     private String lastQuery = "";
 
     private ListView listView;
-    private TextView header;
-    private TextView empty;
-    private EditText searchField;
+    private EditText searchBox;
+    private TextView header, empty;
+    private Button sortBtn;
     private SwipeRefreshLayout swipe;
-    private EntryAdapter adapter;
-    private final ArrayList<Entry> entries = new ArrayList<Entry>();
+    private final List<Entry> entries = new ArrayList<>();
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final Handler ui = new Handler(Looper.getMainLooper());
+    private FileAdapter adapter;
 
-    private final ExecutorService pool = Executors.newSingleThreadExecutor();
-    private final Handler main = new Handler(Looper.getMainLooper());
+    private final BroadcastReceiver cancelReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context c, Intent i) {
+            int id = i.getIntExtra("id", -1);
+            if (id != -1) CANCELLED.put(id, true);
+        }
+    };
 
     static class Entry {
         String name;
@@ -63,275 +80,362 @@ public class BrowseActivity extends AppCompatActivity {
     }
 
     @Override
-    protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
+    protected void onCreate(Bundle b) {
+        super.onCreate(b);
         setContentView(R.layout.activity_browse);
-
         base = getIntent().getStringExtra("base");
         path = getIntent().getStringExtra("path");
         if (path == null) path = "";
 
-        listView = (ListView) findViewById(R.id.list);
-        header = (TextView) findViewById(R.id.header);
-        empty = (TextView) findViewById(R.id.empty);
-        searchField = (EditText) findViewById(R.id.search);
-        swipe = (SwipeRefreshLayout) findViewById(R.id.swipe);
-        Button searchBtn = (Button) findViewById(R.id.search_btn);
+        listView = findViewById(R.id.list);
+        searchBox = findViewById(R.id.search);
+        header = findViewById(R.id.header);
+        empty = findViewById(R.id.empty);
+        sortBtn = findViewById(R.id.sort_btn);
+        swipe = findViewById(R.id.swipe);
+        Button searchBtn = findViewById(R.id.search_btn);
 
-        swipe.setColorSchemeResources(R.color.primary, R.color.accent);
-        swipe.setOnRefreshListener(new SwipeRefreshLayout.OnRefreshListener() {
-            @Override
-            public void onRefresh() {
-                if (searchMode && !TextUtils.isEmpty(lastQuery)) {
-                    fetchInto(base + "/search?q=" + encode(lastQuery), true);
-                } else {
-                    fetchInto(base + "/list?path=" + encode(path), false);
-                }
-            }
-        });
-
-        adapter = new EntryAdapter();
+        adapter = new FileAdapter();
         listView.setAdapter(adapter);
-        listView.setOnItemClickListener(new android.widget.AdapterView.OnItemClickListener() {
-            @Override
-            public void onItemClick(android.widget.AdapterView<?> parent, View view, int position, long id) {
-                onEntryClick(entries.get(position));
-            }
-        });
 
-        searchBtn.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { doSearch(); }
+        sortBtn.setOnClickListener(v -> {
+            ascending = !ascending;
+            updateSortLabel();
+            resortAndShow();
         });
-        searchField.setOnEditorActionListener(new TextView.OnEditorActionListener() {
-            @Override
-            public boolean onEditorAction(TextView v, int actionId, android.view.KeyEvent event) {
-                doSearch();
+        updateSortLabel();
+
+        searchBtn.setOnClickListener(v -> runSearch());
+        searchBox.setOnEditorActionListener((tv, actionId, ev) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                runSearch();
                 return true;
             }
+            return false;
         });
 
-        header.setText(path.isEmpty() ? "/" : "/" + path);
-        loadList();
+        swipe.setOnRefreshListener(() -> {
+            if (searching) doSearch(lastQuery);
+            else loadList(path);
+        });
+
+        listView.setOnItemClickListener((parent, view, pos, id) -> onItemClick(entries.get(pos)));
+
+        registerReceiver(cancelReceiver, new IntentFilter(ACTION_CANCEL));
+        loadList(path);
     }
 
-    private void onEntryClick(Entry e) {
-        if (e.isDir) {
-            Intent intent = new Intent(this, BrowseActivity.class);
-            intent.putExtra("base", base);
-            intent.putExtra("path", e.fullPath);
-            startActivity(intent);
-            overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left);
-        } else {
-            final Entry entry = e;
-            new AlertDialog.Builder(this)
-                    .setTitle(entry.name)
-                    .setItems(new CharSequence[]{"Смотреть", "Скачать"}, new DialogInterface.OnClickListener() {
-                        @Override
-                        public void onClick(DialogInterface dialog, int which) {
-                            if (which == 0) play(entry);
-                            else download(entry);
-                        }
-                    })
-                    .show();
+    private void updateSortLabel() {
+        sortBtn.setText(ascending ? "Имя ↑" : "Имя ↓");
+    }
+
+    private void runSearch() {
+        String q = searchBox.getText().toString().trim();
+        if (q.isEmpty()) {
+            searching = false;
+            loadList(path);
+            return;
         }
+        doSearch(q);
     }
 
-    private void play(Entry e) {
-        String url = base + "/download?path=" + encode(e.fullPath);
-        Intent intent = new Intent(this, PlayerActivity.class);
-        intent.putExtra("url", url);
-        intent.putExtra("title", e.name);
-        startActivity(intent);
+    private void loadList(final String p) {
+        searching = false;
+        header.setText("/" + p);
+        swipe.setRefreshing(true);
+        io.execute(() -> {
+            try {
+                String body = httpGet(base + "/list?path=" + Util.enc(p));
+                JSONObject o = new JSONObject(body);
+                JSONArray arr = o.getJSONArray("entries");
+                final List<Entry> loaded = new ArrayList<>();
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject e = arr.getJSONObject(i);
+                    Entry en = new Entry();
+                    en.name = e.getString("name");
+                    en.isDir = e.getBoolean("is_dir");
+                    en.size = e.optLong("size", 0);
+                    en.fullPath = p.isEmpty() ? en.name : p + "/" + en.name;
+                    loaded.add(en);
+                }
+                ui.post(() -> {
+                    path = p;
+                    entries.clear();
+                    entries.addAll(loaded);
+                    resortAndShow();
+                    swipe.setRefreshing(false);
+                });
+            } catch (Exception ex) {
+                showError(ex);
+            }
+        });
+    }
+
+    private void doSearch(final String q) {
+        lastQuery = q;
+        searching = true;
+        header.setText("🔍 " + q);
+        swipe.setRefreshing(true);
+        io.execute(() -> {
+            try {
+                String body = httpGet(base + "/search?q=" + Util.enc(q) + "&path=" + Util.enc(path));
+                JSONObject o = new JSONObject(body);
+                JSONArray arr = o.getJSONArray("entries");
+                final List<Entry> loaded = new ArrayList<>();
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject e = arr.getJSONObject(i);
+                    Entry en = new Entry();
+                    en.name = e.getString("name");
+                    en.isDir = e.getBoolean("is_dir");
+                    en.size = e.optLong("size", 0);
+                    en.fullPath = e.getString("path");
+                    loaded.add(en);
+                }
+                ui.post(() -> {
+                    entries.clear();
+                    entries.addAll(loaded);
+                    resortAndShow();
+                    swipe.setRefreshing(false);
+                });
+            } catch (Exception ex) {
+                showError(ex);
+            }
+        });
+    }
+
+    private void showError(final Exception ex) {
+        ui.post(() -> {
+            swipe.setRefreshing(false);
+            String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
+            if (msg != null && msg.contains("403")) msg = "Доступ отклонён сервером";
+            Toast.makeText(this, "Ошибка: " + msg, Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void resortAndShow() {
+        Collections.sort(entries, new Comparator<Entry>() {
+            @Override
+            public int compare(Entry a, Entry b) {
+                if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
+                int c = Util.naturalCompare(a.name, b.name);
+                return ascending ? c : -c;
+            }
+        });
+        adapter.notifyDataSetChanged();
+        empty.setVisibility(entries.isEmpty() ? View.VISIBLE : View.GONE);
+        listView.setLayoutAnimation(android.view.animation.AnimationUtils.loadLayoutAnimation(this, R.anim.layout_anim));
+        listView.scheduleLayoutAnimation();
+    }
+
+    private void onItemClick(Entry e) {
+        if (e.isDir) {
+            searchBox.setText("");
+            loadList(e.fullPath);
+            return;
+        }
+        final boolean video = Util.isVideo(e.name);
+        final String[] opts = video ? new String[]{"Смотреть", "Скачать"} : new String[]{"Скачать"};
+        new AlertDialog.Builder(this)
+                .setTitle(e.name)
+                .setItems(opts, (d, which) -> {
+                    if (video && which == 0) openPlayer(e);
+                    else startDownload(e);
+                })
+                .show();
+    }
+
+    private void openPlayer(Entry e) {
+        String folder = "";
+        int idx = e.fullPath.lastIndexOf('/');
+        if (idx >= 0) folder = e.fullPath.substring(0, idx);
+        Intent i = new Intent(this, PlayerActivity.class);
+        i.putExtra("base", base);
+        i.putExtra("path", e.fullPath);
+        i.putExtra("name", e.name);
+        i.putExtra("folder", folder);
+        startActivity(i);
         overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }
 
-    private void loadList() {
-        searchMode = false;
-        header.setText(path.isEmpty() ? "/" : "/" + path);
-        fetchInto(base + "/list?path=" + encode(path), false);
+    private void startDownload(final Entry e) {
+        final int nid = NOTIF_SEQ.incrementAndGet();
+        Toast.makeText(this, "Загрузка: " + e.name, Toast.LENGTH_SHORT).show();
+        io.execute(() -> {
+            NotificationManagerCompat nm = NotificationManagerCompat.from(this);
+            NotificationCompat.Builder nb = new NotificationCompat.Builder(this)
+                    .setSmallIcon(android.R.drawable.stat_sys_download)
+                    .setContentTitle(e.name)
+                    .setContentText("Подготовка…")
+                    .setOngoing(true)
+                    .setPriority(NotificationCompat.PRIORITY_LOW);
+            Intent ci = new Intent(ACTION_CANCEL).putExtra("id", nid);
+            PendingIntent pi = PendingIntent.getBroadcast(this, nid, ci, PendingIntent.FLAG_UPDATE_CURRENT);
+            nb.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Отмена", pi);
+            nm.notify(nid, nb.build());
+
+            boolean cancelled = false;
+            try {
+                File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                if (!dir.exists()) dir.mkdirs();
+                File out = new File(dir, e.name);
+                long existing = out.exists() ? out.length() : 0;
+
+                HttpURLConnection c = (HttpURLConnection) new URL(base + "/download?path=" + Util.enc(e.fullPath)).openConnection();
+                App.auth(c, this);
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(40000);
+                if (existing > 0) c.setRequestProperty("Range", "bytes=" + existing + "-");
+                int code = c.getResponseCode();
+
+                boolean append;
+                long total;
+                if (code == 206) {
+                    append = true;
+                    total = existing + c.getContentLength();
+                } else if (code == 200) {
+                    append = false;
+                    existing = 0;
+                    total = c.getContentLength();
+                } else {
+                    throw new RuntimeException("HTTP " + code);
+                }
+
+                InputStream in = c.getInputStream();
+                FileOutputStream fos = new FileOutputStream(out, append);
+                byte[] buf = new byte[65536];
+                long done = existing;
+                int r;
+                int lastPct = -1;
+                while ((r = in.read(buf)) != -1) {
+                    if (CANCELLED.remove(nid) != null) {
+                        cancelled = true;
+                        break;
+                    }
+                    fos.write(buf, 0, r);
+                    done += r;
+                    if (total > 0) {
+                        int pct = (int) (done * 100 / total);
+                        if (pct != lastPct) {
+                            lastPct = pct;
+                            nb.setProgress(100, pct, false).setContentText(pct + "%  ·  " + Util.humanSize(done));
+                            nm.notify(nid, nb.build());
+                        }
+                    }
+                }
+                fos.flush();
+                fos.close();
+                in.close();
+                c.disconnect();
+            } catch (Exception ex) {
+                nb.setOngoing(false).setProgress(0, 0, false).setContentText("Ошибка: " + ex.getMessage()).setAutoCancel(true);
+                nm.notify(nid, nb.build());
+                return;
+            }
+
+            if (cancelled) {
+                nm.cancel(nid);
+                ui.post(() -> Toast.makeText(this, "Загрузка отменена", Toast.LENGTH_SHORT).show());
+            } else {
+                nb.setOngoing(false).setProgress(0, 0, false)
+                        .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                        .setContentText("Готово")
+                        .setAutoCancel(true);
+                nm.notify(nid, nb.build());
+                ui.post(() -> Toast.makeText(this, "Скачано: " + e.name, Toast.LENGTH_SHORT).show());
+            }
+        });
     }
 
-    private void doSearch() {
-        String q = searchField.getText().toString().trim();
-        hideKeyboard();
-        if (TextUtils.isEmpty(q)) {
-            loadList();
-            return;
+    private String httpGet(String u) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+        App.auth(c, this);
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(40000);
+        int code = c.getResponseCode();
+        if (code != 200) {
+            c.disconnect();
+            throw new RuntimeException("HTTP " + code);
         }
-        searchMode = true;
-        lastQuery = q;
-        header.setText("Поиск: " + q);
-        fetchInto(base + "/search?q=" + encode(q), true);
-    }
-
-    private void fetchInto(final String url, final boolean isSearch) {
-        empty.setVisibility(View.GONE);
-        pool.execute(new Runnable() {
-            @Override
-            public void run() {
-                final ArrayList<Entry> result = new ArrayList<Entry>();
-                String error = null;
-                try {
-                    String body = httpGet(url);
-                    JSONObject obj = new JSONObject(body);
-                    JSONArray arr = obj.getJSONArray("entries");
-                    for (int i = 0; i < arr.length(); i++) {
-                        JSONObject o = arr.getJSONObject(i);
-                        Entry e = new Entry();
-                        e.name = o.getString("name");
-                        e.isDir = o.optBoolean("is_dir", false);
-                        e.size = o.optLong("size", 0);
-                        if (isSearch) {
-                            e.fullPath = o.optString("path", e.name);
-                        } else {
-                            e.fullPath = path.isEmpty() ? e.name : path + "/" + e.name;
-                        }
-                        result.add(e);
-                    }
-                } catch (Exception ex) {
-                    error = ex.getMessage();
-                }
-                final String err = error;
-                main.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        swipe.setRefreshing(false);
-                        if (err != null) {
-                            Toast.makeText(BrowseActivity.this, "Ошибка: " + err, Toast.LENGTH_LONG).show();
-                        }
-                        entries.clear();
-                        entries.addAll(result);
-                        adapter.notifyDataSetChanged();
-                        empty.setVisibility(entries.isEmpty() ? View.VISIBLE : View.GONE);
-                        animateList();
-                    }
-                });
-            }
-        });
-    }
-
-    private void download(final Entry e) {
-        final String url = base + "/download?path=" + encode(e.fullPath);
-        Toast.makeText(this, "Скачивание: " + e.name, Toast.LENGTH_SHORT).show();
-        pool.execute(new Runnable() {
-            @Override
-            public void run() {
-                String msg;
-                try {
-                    File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                    if (!dir.exists()) dir.mkdirs();
-                    File out = new File(dir, e.name);
-                    HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-                    conn.setConnectTimeout(15000);
-                    conn.setReadTimeout(30000);
-                    InputStream in = new BufferedInputStream(conn.getInputStream());
-                    FileOutputStream fos = new FileOutputStream(out);
-                    byte[] buf = new byte[65536];
-                    int n;
-                    while ((n = in.read(buf)) != -1) {
-                        fos.write(buf, 0, n);
-                    }
-                    fos.flush();
-                    fos.close();
-                    in.close();
-                    conn.disconnect();
-                    msg = "Готово: " + out.getAbsolutePath();
-                } catch (Exception ex) {
-                    msg = "Ошибка скачивания: " + ex.getMessage();
-                }
-                final String fmsg = msg;
-                main.post(new Runnable() {
-                    @Override public void run() {
-                        Toast.makeText(BrowseActivity.this, fmsg, Toast.LENGTH_LONG).show();
-                    }
-                });
-            }
-        });
-    }
-
-    private static String httpGet(String url) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        conn.setConnectTimeout(15000);
-        conn.setReadTimeout(20000);
-        InputStream in = new BufferedInputStream(conn.getInputStream());
-        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        InputStream in = c.getInputStream();
+        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
         byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) != -1) bos.write(buf, 0, n);
+        int r;
+        while ((r = in.read(buf)) != -1) bo.write(buf, 0, r);
         in.close();
-        conn.disconnect();
-        return new String(bos.toByteArray(), "UTF-8");
-    }
-
-    private static String encode(String s) {
-        try {
-            return URLEncoder.encode(s, "UTF-8").replace("+", "%20");
-        } catch (Exception e) {
-            return s;
-        }
-    }
-
-    private void hideKeyboard() {
-        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-        if (imm != null && getCurrentFocus() != null) {
-            imm.hideSoftInputFromWindow(getCurrentFocus().getWindowToken(), 0);
-        }
-    }
-
-    private void animateList() {
-        listView.setLayoutAnimation(
-                android.view.animation.AnimationUtils.loadLayoutAnimation(this, R.anim.layout_anim));
-        listView.scheduleLayoutAnimation();
+        c.disconnect();
+        return bo.toString("UTF-8");
     }
 
     @Override
     public void onBackPressed() {
-        if (searchMode) {
-            searchField.setText("");
-            loadList();
-        } else {
-            super.onBackPressed();
-            overridePendingTransition(R.anim.slide_in_left, R.anim.slide_out_right);
+        if (searching) {
+            searchBox.setText("");
+            searching = false;
+            loadList(path);
+            return;
         }
+        if (path != null && !path.isEmpty()) {
+            int idx = path.lastIndexOf('/');
+            loadList(idx >= 0 ? path.substring(0, idx) : "");
+            return;
+        }
+        super.onBackPressed();
+        overridePendingTransition(R.anim.slide_in_left, R.anim.slide_out_right);
     }
 
-    private static String humanSize(long bytes) {
-        if (bytes <= 0) return "";
-        String[] u = {"Б", "КБ", "МБ", "ГБ", "ТБ"};
-        int i = 0;
-        double v = bytes;
-        while (v >= 1024 && i < u.length - 1) {
-            v /= 1024;
-            i++;
-        }
-        return String.format(java.util.Locale.US, "%.1f %s", v, u[i]);
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (adapter != null) adapter.notifyDataSetChanged();
     }
 
-    class EntryAdapter extends BaseAdapter {
-        @Override public int getCount() { return entries.size(); }
-        @Override public Object getItem(int position) { return entries.get(position); }
-        @Override public long getItemId(int position) { return position; }
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        try {
+            unregisterReceiver(cancelReceiver);
+        } catch (Exception ignored) {
+        }
+        io.shutdownNow();
+    }
+
+    class FileAdapter extends BaseAdapter {
+        @Override
+        public int getCount() {
+            return entries.size();
+        }
 
         @Override
-        public View getView(int position, View convertView, ViewGroup parent) {
-            View v = convertView;
-            if (v == null) {
-                v = LayoutInflater.from(BrowseActivity.this).inflate(R.layout.list_item, parent, false);
+        public Object getItem(int i) {
+            return entries.get(i);
+        }
+
+        @Override
+        public long getItemId(int i) {
+            return i;
+        }
+
+        @Override
+        public View getView(int pos, View convert, ViewGroup parent) {
+            if (convert == null) {
+                convert = LayoutInflater.from(BrowseActivity.this).inflate(R.layout.list_item, parent, false);
             }
-            Entry e = entries.get(position);
-            TextView icon = (TextView) v.findViewById(R.id.item_icon);
-            TextView name = (TextView) v.findViewById(R.id.item_name);
-            TextView sub = (TextView) v.findViewById(R.id.item_sub);
-            icon.setText(e.isDir ? "\uD83D\uDCC1" : "\uD83C\uDFAC");
+            Entry e = entries.get(pos);
+            TextView icon = convert.findViewById(R.id.item_icon);
+            TextView name = convert.findViewById(R.id.item_name);
+            TextView sub = convert.findViewById(R.id.item_sub);
+            TextView check = convert.findViewById(R.id.item_check);
+            boolean video = Util.isVideo(e.name);
+            icon.setText(e.isDir ? "📁" : (video ? "🎬" : "📄"));
             name.setText(e.name);
-            if (searchMode) {
-                sub.setText("/" + e.fullPath);
-            } else if (e.isDir) {
+            if (e.isDir) {
                 sub.setText("папка");
             } else {
-                sub.setText(humanSize(e.size));
+                sub.setText(Util.humanSize(e.size));
             }
-            return v;
+            boolean watched = !e.isDir && video && Store.isWatched(BrowseActivity.this, e.fullPath);
+            check.setVisibility(watched ? View.VISIBLE : View.GONE);
+            return convert;
         }
     }
 }

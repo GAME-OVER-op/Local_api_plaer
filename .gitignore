@@ -1,18 +1,15 @@
-# Android / Gradle
-.gradle/
-build/
-*.apk
-*.ap_
-*.aab
-local.properties
-.idea/
+# Android
 *.iml
-captures/
-.externalNativeBuild/
-.cxx/
+.gradle/
+/local.properties
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+app/build/
+app/app/build/
 
 # Rust
-target/
-
-# OS
-.DS_Store
+/server/target

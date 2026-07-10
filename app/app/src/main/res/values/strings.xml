@@ -4,5 +4,5 @@
     <string name="settings">Настройки</string>
     <string name="menu_settings">Настройки</string>
     <string name="dark_theme">Тёмная тема</string>
-    <string name="dark_theme_hint">Переключает оформление всего приложения между светлой и тёмной.</string>
+    <string name="dark_theme_hint">Переключает оформление между светлой и тёмной темой.</string>
 </resources>
