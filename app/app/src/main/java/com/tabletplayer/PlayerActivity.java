@@ -201,6 +201,7 @@ public class PlayerActivity extends AppCompatActivity {
         if (audioManager != null) {
             audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
         }
+        try {
         session = new MediaSessionCompat(this, "TabletPlayer");
         session.setCallback(new MediaSessionCompat.Callback() {
             @Override
@@ -229,6 +230,9 @@ public class PlayerActivity extends AppCompatActivity {
             }
         });
         session.setActive(true);
+        } catch (Throwable e) {
+            session = null;
+        }
     }
 
     private void updatePlaybackState() {

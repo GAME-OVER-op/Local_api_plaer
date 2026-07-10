@@ -15,7 +15,31 @@ public class App extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+        installCrashLogger();
         applyTheme(isDark(this));
+    }
+
+    private void installCrashLogger() {
+        final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            try {
+                java.io.StringWriter sw = new java.io.StringWriter();
+                java.io.PrintWriter pw = new java.io.PrintWriter(sw);
+                pw.println("=== Планшет Плеер: сбой ===");
+                pw.println("Время: " + new java.util.Date().toString());
+                pw.println("Поток: " + t.getName());
+                pw.println("Устройство: " + deviceName() + " / Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")");
+                pw.println();
+                e.printStackTrace(pw);
+                pw.flush();
+                java.io.File f = new java.io.File(android.os.Environment.getExternalStorageDirectory(), "tablet_player_crash.txt");
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+                fos.write(sw.toString().getBytes("UTF-8"));
+                fos.close();
+            } catch (Throwable ignored) {
+            }
+            if (prev != null) prev.uncaughtException(t, e);
+        });
     }
 
     public static SharedPreferences prefs(Context c) {
