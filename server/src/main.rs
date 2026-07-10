@@ -282,7 +282,7 @@ fn main() {
 
 fn header_val(request: &Request, name: &str) -> String {
     for h in request.headers() {
-        if h.field.equiv(name) {
+        if format!("{}", h.field).eq_ignore_ascii_case(name) {
             return h.value.as_str().to_string();
         }
     }

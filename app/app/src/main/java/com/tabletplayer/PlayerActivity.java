@@ -196,8 +196,6 @@ public class PlayerActivity extends AppCompatActivity {
             audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
         }
         session = new MediaSessionCompat(this, "TabletPlayer");
-        session.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTON_KEYS
-                | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
         session.setCallback(new MediaSessionCompat.Callback() {
             @Override
             public void onPlay() {
