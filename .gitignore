@@ -1,19 +1,18 @@
-# Rust
-/server/target/
-**/target/
-Cargo.lock
-
 # Android / Gradle
 .gradle/
-**/build/
-/app/local.properties
+build/
+*.apk
+*.ap_
+*.aab
 local.properties
-*.iml
-
-# IDE
 .idea/
-.vscode/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Rust
+target/
 
 # OS
 .DS_Store
-Thumbs.db

@@ -1,64 +1,113 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#000000">
+    android:background="@android:color/black">
 
-    <org.videolan.libvlc.util.VLCVideoLayout
+    <FrameLayout
         android:id="@+id/video_layout"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_height="match_parent"
+        android:layout_gravity="center" />
+
+    <!-- Прозрачный слой для жестов: свайп = перемотка, тап = показать/скрыть контролы -->
+    <View
+        android:id="@+id/gesture_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
     <TextView
-        android:id="@+id/time"
-        android:layout_width="match_parent"
+        android:id="@+id/gesture_info"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/overlay_bg"
+        android:paddingLeft="18dp"
+        android:paddingRight="18dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp"
         android:textColor="#FFFFFF"
-        android:paddingLeft="12dp"
-        android:paddingRight="12dp"
-        android:text="00:00 / 00:00" />
+        android:textSize="18sp"
+        android:visibility="gone" />
 
     <LinearLayout
+        android:id="@+id/controls"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:padding="8dp"
-        android:gravity="center_vertical">
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:background="@drawable/controls_scrim"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:paddingTop="18dp"
+        android:paddingBottom="12dp">
 
-        <Button
-            android:id="@+id/rew"
+        <TextView
+            android:id="@+id/time"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="↺10" />
-
-        <Button
-            android:id="@+id/play_pause"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="⏸" />
-
-        <Button
-            android:id="@+id/fwd"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="10↻" />
+            android:layout_marginLeft="4dp"
+            android:text="00:00 / 00:00"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp" />
 
         <SeekBar
             android:id="@+id/seek"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginLeft="8dp"
-            android:layout_marginRight="8dp" />
+            android:layout_marginTop="2dp" />
 
-        <Button
-            android:id="@+id/speed"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="1.0x" />
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal"
+            android:gravity="center">
+
+            <Button
+                android:id="@+id/rew"
+                style="@style/ControlButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="↺ 10" />
+
+            <Button
+                android:id="@+id/play_pause"
+                style="@style/ControlButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="⏸" />
+
+            <Button
+                android:id="@+id/fwd"
+                style="@style/ControlButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="10 ↻" />
+
+            <Button
+                android:id="@+id/fwd90"
+                style="@style/ControlButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="+1:30" />
+
+            <Button
+                android:id="@+id/speed"
+                style="@style/ControlButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="1.0x" />
+
+            <Button
+                android:id="@+id/aspect"
+                style="@style/ControlButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="⬚" />
+
+        </LinearLayout>
 
     </LinearLayout>
 
-</LinearLayout>
+</FrameLayout>

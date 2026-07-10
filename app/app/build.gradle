@@ -24,8 +24,15 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            // R8: сжатие и оптимизация кода + удаление неиспользуемых ресурсов.
+            minifyEnabled true
+            shrinkResources true
+            // Подпись debug-ключом: release-APK ставится без собственного keystore.
+            signingConfig signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            minifyEnabled false
         }
     }
 
