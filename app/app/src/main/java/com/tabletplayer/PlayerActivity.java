@@ -164,9 +164,9 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void initPlayer() {
         ArrayList<String> options = new ArrayList<>();
-        options.add("--no-drop-late-frames");
-        options.add("--no-skip-frames");
         options.add("--network-caching=1500");
+        options.add("--avcodec-skiploopfilter=all");
+        options.add("--avcodec-fast");
         libVLC = new LibVLC(this, options);
         player = new MediaPlayer(libVLC);
         player.attachViews(videoLayout, null, false, false);

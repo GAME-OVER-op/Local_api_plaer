@@ -121,11 +121,11 @@
 
                 <ImageButton android:id="@+id/fwd90" style="@style/ControlButton"
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:contentDescription="Вперёд 1:30" app:srcCompat="@drawable/ic_skip_next" />
+                    android:contentDescription="Вперёд 1:30" app:srcCompat="@drawable/ic_skip_forward" />
 
                 <ImageButton android:id="@+id/next" style="@style/ControlButton"
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:contentDescription="Следующая" app:srcCompat="@drawable/ic_skip_forward" />
+                    android:contentDescription="Следующая" app:srcCompat="@drawable/ic_skip_next" />
 
                 <Button android:id="@+id/speed" style="@style/ControlButton"
                     android:layout_width="wrap_content" android:layout_height="wrap_content"
