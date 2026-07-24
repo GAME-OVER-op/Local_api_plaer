@@ -17,7 +17,6 @@ import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import org.json.JSONArray;
@@ -27,6 +26,7 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +41,7 @@ public class MainActivity extends AppCompatActivity {
     private ListView history;
     private TextView historyEmpty;
     private final Handler ui = new Handler(Looper.getMainLooper());
+    private final Map<String, String> serverNames = new HashMap<>();
 
     @Override
     protected void onCreate(Bundle b) {
@@ -82,13 +83,15 @@ public class MainActivity extends AppCompatActivity {
         }
         App.prefs(this).edit().putString(KEY_IP, host).putString(KEY_PORT, String.valueOf(p)).apply();
         addHistory(host + ":" + p);
-        openBrowse(host, p);
+        String nm = serverNames.get(host + ":" + p);
+        openBrowse(host, p, nm == null ? "" : nm);
     }
 
-    private void openBrowse(String host, int p) {
+    private void openBrowse(String host, int p, String name) {
         Intent i = new Intent(this, BrowseActivity.class);
         i.putExtra("base", "http://" + host + ":" + p);
         i.putExtra("path", "");
+        i.putExtra("server_name", name == null ? "" : name);
         startActivity(i);
         overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left);
     }
@@ -126,10 +129,16 @@ public class MainActivity extends AppCompatActivity {
             if (idx > 0) {
                 String host = s.substring(0, idx);
                 int p = 10930;
-                try { p = Integer.parseInt(s.substring(idx + 1)); } catch (Exception ignored) {}
+                try {
+                    p = Integer.parseInt(s.substring(idx + 1));
+                } catch (Exception ignored) {
+                }
                 ip.setText(host);
                 port.setText(String.valueOf(p));
-                openBrowse(host, p);
+                App.prefs(this).edit().putString(KEY_IP, host).putString(KEY_PORT, String.valueOf(p)).apply();
+                addHistory(host + ":" + p);
+                String nm = serverNames.get(host + ":" + p);
+                openBrowse(host, p, nm == null ? "" : nm);
             }
         });
     }
@@ -210,8 +219,9 @@ public class MainActivity extends AppCompatActivity {
         for (int i = 0; i < list.size(); i++) {
             JSONObject o = list.get(i);
             labels[i] = o.optString("name") + "\n" + o.optString("host") + ":" + o.optInt("port");
+            serverNames.put(o.optString("host") + ":" + o.optInt("port"), o.optString("name"));
         }
-        new AlertDialog.Builder(this)
+        new androidx.appcompat.app.AlertDialog.Builder(this)
                 .setTitle("Найденные серверы")
                 .setItems(labels, (dialog, which) -> {
                     JSONObject o = list.get(which);
