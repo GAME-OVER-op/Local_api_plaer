@@ -26,6 +26,7 @@ import org.videolan.libvlc.Media;
 import org.videolan.libvlc.MediaPlayer;
 import org.videolan.libvlc.util.VLCVideoLayout;
 
+import java.io.File;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -39,14 +40,17 @@ public class PlayerActivity extends AppCompatActivity {
     private static final int JUMP90_MS = 90000;
     private static final int AUTO_HIDE_MS = 3500;
     private static final long SWIPE_FULL_WIDTH_MS = 120000;
+    private static final int NET_CACHING = 4000;
 
-    private String base, path, name, folder;
+    private String base, path, name, folder, serverName;
+    private boolean local = false;
 
     private LibVLC libVLC;
     private MediaPlayer player;
     private VLCVideoLayout videoLayout;
     private View controls, gestureOverlay, buffering;
-    private TextView time, gestureInfo, bufferingText;
+    private TextView time, gestureInfo, bufferingText, titleBar;
+    private android.widget.Button retryBtn;
     private SeekBar seek;
     private ImageButton prev, rew, playPause, fwd, fwd90, next, aspect, fullscreen;
     private android.widget.Button speed;
@@ -57,6 +61,8 @@ public class PlayerActivity extends AppCompatActivity {
     private int mode = 0; // 0 none, 1 seek, 2 volume
     private long dragStartTime = 0;
     private int dragStartVol = 100, volume = 100, reconnectAttempts = 0;
+    private boolean reconnecting = false;
+    private long resumeMs = 0;
 
     private final float[] speeds = {1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f};
     private int speedIdx = 0;
@@ -84,6 +90,12 @@ public class PlayerActivity extends AppCompatActivity {
         }
     };
     private final Runnable hideRunnable = this::hideControls;
+    private final Runnable reconnectAgain = new Runnable() {
+        @Override
+        public void run() {
+            reconnectStep();
+        }
+    };
 
     @Override
     protected void onCreate(Bundle b) {
@@ -95,7 +107,10 @@ public class PlayerActivity extends AppCompatActivity {
         path = getIntent().getStringExtra("path");
         name = getIntent().getStringExtra("name");
         folder = getIntent().getStringExtra("folder");
+        serverName = getIntent().getStringExtra("server_name");
+        local = getIntent().getBooleanExtra("local", false);
         if (folder == null) folder = "";
+        if (serverName == null) serverName = "";
 
         String[] queuePathsExtra = getIntent().getStringArrayExtra("queue_paths");
         String[] queueNamesExtra = getIntent().getStringArrayExtra("queue_names");
@@ -114,7 +129,9 @@ public class PlayerActivity extends AppCompatActivity {
         controls = findViewById(R.id.controls);
         gestureOverlay = findViewById(R.id.gesture_overlay);
         buffering = findViewById(R.id.buffering);
-        bufferingText = (TextView) ((android.view.ViewGroup) buffering).getChildAt(1);
+        bufferingText = findViewById(R.id.buffering_text);
+        retryBtn = findViewById(R.id.buffer_retry);
+        titleBar = findViewById(R.id.title_bar);
         gestureInfo = findViewById(R.id.gesture_info);
         time = findViewById(R.id.time);
         seek = findViewById(R.id.seek);
@@ -127,6 +144,12 @@ public class PlayerActivity extends AppCompatActivity {
         speed = findViewById(R.id.speed);
         aspect = findViewById(R.id.aspect);
         fullscreen = findViewById(R.id.fullscreen);
+
+        retryBtn.setOnClickListener(v -> {
+            retryBtn.setVisibility(View.GONE);
+            reconnectAttempts = 0;
+            reconnectStep();
+        });
 
         prev.setOnClickListener(v -> { playPrev(); showControls(); });
         rew.setOnClickListener(v -> { seekRelative(-JUMP_MS); showControls(); });
@@ -160,15 +183,16 @@ public class PlayerActivity extends AppCompatActivity {
         initPlayer();
         setupSession();
         askResume();
-        if (hasQueue) updateEpisodeIndex();
-        else fetchEpisodes();
+        if (!local) {
+            if (hasQueue) updateEpisodeIndex();
+            else fetchEpisodes();
+        }
     }
 
     private void initPlayer() {
         ArrayList<String> options = new ArrayList<>();
-        options.add("--network-caching=1500");
-        options.add("--avcodec-skiploopfilter=all");
-        options.add("--avcodec-fast");
+        options.add("--network-caching=" + NET_CACHING);
+        options.add("--file-caching=" + NET_CACHING);
         libVLC = new LibVLC(this, options);
         player = new MediaPlayer(libVLC);
         player.attachViews(videoLayout, null, false, false);
@@ -184,6 +208,7 @@ public class PlayerActivity extends AppCompatActivity {
         switch (type) {
             case MediaPlayer.Event.Playing:
                 reconnectAttempts = 0;
+                reconnecting = false;
                 started = true;
                 hideBuffering();
                 if (pendingResumeMs > 0) {
@@ -196,18 +221,21 @@ public class PlayerActivity extends AppCompatActivity {
                 updatePlaybackState();
                 break;
             case MediaPlayer.Event.Buffering:
-                if (pct >= 100f) hideBuffering();
-                else if (!started) showBuffering("Подготовка видео…");
+                if (!started) {
+                    if (!reconnecting) showBuffering("Подготовка… " + (int) pct + "%");
+                } else if (pct >= 100f) {
+                    hideBuffering();
+                }
                 break;
             case MediaPlayer.Event.Paused:
                 updatePlayIcon();
                 updatePlaybackState();
                 break;
             case MediaPlayer.Event.EndReached:
-                onEnd();
+                handleEnd();
                 break;
             case MediaPlayer.Event.EncounteredError:
-                onError();
+                handleDrop();
                 break;
         }
     }
@@ -287,17 +315,24 @@ public class PlayerActivity extends AppCompatActivity {
         }
     }
 
-    private void playPath(String p, String nm, long resumeMs) {
+    private Media buildMedia(String p) {
+        Uri uri = local ? Uri.fromFile(new File(p)) : Uri.parse(streamUrl(p));
+        Media media = new Media(libVLC, uri);
+        media.setHWDecoderEnabled(true, false);
+        media.addOption(":network-caching=" + NET_CACHING);
+        return media;
+    }
+
+    private void playPath(String p, String nm, long resume) {
         path = p;
         name = nm;
-        pendingResumeMs = resumeMs;
+        pendingResumeMs = resume;
         started = false;
-        updateEpisodeIndex();
+        if (!local) updateEpisodeIndex();
         setTitle(nm);
-        showBuffering("Подготовка видео…");
-        Media media = new Media(libVLC, Uri.parse(streamUrl(p)));
-        media.setHWDecoderEnabled(true, false);
-        media.addOption(":network-caching=1500");
+        titleBar.setText(nm);
+        showBuffering("Подготовка…");
+        Media media = buildMedia(p);
         player.setMedia(media);
         media.release();
         player.play();
@@ -330,27 +365,139 @@ public class PlayerActivity extends AppCompatActivity {
         episodeIndex = episodePaths.indexOf(path);
     }
 
-    private void onEnd() {
-        Store.clearPos(this, path);
-        Store.markWatched(this, path);
-        showNextDialog();
+    private void finishFade() {
+        finish();
+        overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }
 
-    private void onError() {
-        reconnectAttempts++;
-        if (reconnectAttempts <= 5) {
-            final long resume = currentMs;
-            showBuffering("Переподключение… (" + reconnectAttempts + ")");
-            ui.postDelayed(() -> playPath(path, name, resume), 2000);
-        } else {
-            Toast.makeText(this, "Ошибка воспроизведения", Toast.LENGTH_LONG).show();
+    private void handleEnd() {
+        if (local) {
+            Store.clearPos(this, path);
+            finishFade();
+            return;
         }
+        // Настоящий конец — только если досмотрели почти до конца.
+        // Иначе это обрыв сети — libVLC часто шлёт EndReached вместо ошибки.
+        if (duration > 0 && currentMs > 0 && currentMs >= duration - 8000) {
+            Store.clearPos(this, path);
+            Store.markWatched(this, path);
+            showNextDialog();
+        } else {
+            handleDrop();
+        }
+    }
+
+    private void handleDrop() {
+        if (local) {
+            Toast.makeText(this, "Ошибка воспроизведения файла", Toast.LENGTH_LONG).show();
+            return;
+        }
+        reconnectStep();
+    }
+
+    /** Статус «поиск сервера»: повтор на текущем IP, затем переобнаружение (IP мог смениться). */
+    private void reconnectStep() {
+        if (player == null) return;
+        if (!reconnecting) {
+            reconnecting = true;
+            reconnectAttempts = 0;
+            resumeMs = currentMs > 0 ? currentMs : pendingResumeMs;
+        }
+        reconnectAttempts++;
+        if (reconnectAttempts > 10) {
+            showRetry("Сервер не найден");
+            return;
+        }
+        if (reconnectAttempts <= 3) {
+            showBuffering("Соединение потеряно. Переподключение… (" + reconnectAttempts + ")");
+            ui.postDelayed(() -> reloadStream(resumeMs), 1500);
+        } else {
+            showBuffering("Поиск сервера в сети…");
+            rediscover(resumeMs);
+        }
+    }
+
+    private void reloadStream(long ms) {
+        if (player == null) return;
+        started = false;
+        pendingResumeMs = ms;
+        Media media = buildMedia(path);
+        player.setMedia(media);
+        media.release();
+        player.play();
+        player.setRate(speeds[speedIdx]);
+    }
+
+    private void rediscover(final long ms) {
+        final int port = portFromBase(base);
+        new Thread(() -> {
+            final List<Discovery.Server> servers = Discovery.find(this, port, 2500);
+            final String nb = pickServer(servers);
+            ui.post(() -> {
+                if (player == null) return;
+                if (nb != null) {
+                    base = nb;
+                    reloadStream(ms);
+                } else {
+                    ui.postDelayed(reconnectAgain, 1500);
+                }
+            });
+        }).start();
+    }
+
+    private String pickServer(List<Discovery.Server> servers) {
+        // Сначала — сервер с тем же именем и наличием файла по тому же пути.
+        if (serverName != null && !serverName.isEmpty()) {
+            for (Discovery.Server s : servers) {
+                if (serverName.equals(s.name)) {
+                    String cand = "http://" + s.host + ":" + s.port;
+                    if (verifyPath(cand, path)) return cand;
+                }
+            }
+        }
+        for (Discovery.Server s : servers) {
+            String cand = "http://" + s.host + ":" + s.port;
+            if (verifyPath(cand, path)) return cand;
+        }
+        return null;
+    }
+
+    private boolean verifyPath(String cand, String p) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(cand + "/download?path=" + Util.enc(p)
+                    + "&dev=" + Util.enc(App.deviceId(this)) + "&dn=" + Util.enc(App.deviceName())).openConnection();
+            App.auth(c, this);
+            c.setRequestProperty("Range", "bytes=0-0");
+            c.setConnectTimeout(2500);
+            c.setReadTimeout(2500);
+            int code = c.getResponseCode();
+            return code == 200 || code == 206;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    private int portFromBase(String b) {
+        try {
+            int i = b.lastIndexOf(':');
+            return Integer.parseInt(b.substring(i + 1));
+        } catch (Exception e) {
+            return 10930;
+        }
+    }
+
+    private void showRetry(String msg) {
+        reconnecting = true;
+        showBuffering(msg + ". Нажмите «Повторить».");
+        retryBtn.setVisibility(View.VISIBLE);
     }
 
     private void showNextDialog() {
         if (episodePaths.isEmpty() || episodeIndex < 0 || episodeIndex + 1 >= episodePaths.size()) {
-            finish();
-            overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
+            finishFade();
             return;
         }
         final List<Integer> idxs = new ArrayList<>();
@@ -365,10 +512,7 @@ public class PlayerActivity extends AppCompatActivity {
                 .setTitle("Следующая серия через " + left[0] + "…")
                 .setSingleChoiceItems(labels.toArray(new String[0]), 0, (d, w) -> chosen[0] = w)
                 .setPositiveButton("Смотреть", (d, w) -> playEpisode(idxs.get(chosen[0])))
-                .setNegativeButton("Выйти", (d, w) -> {
-                    finish();
-                    overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
-                })
+                .setNegativeButton("Выйти", (d, w) -> finishFade())
                 .setCancelable(true)
                 .create();
         dlg.show();
@@ -593,15 +737,18 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void showBuffering(String text) {
         bufferingText.setText(text);
+        retryBtn.setVisibility(View.GONE);
         buffering.setVisibility(View.VISIBLE);
     }
 
     private void hideBuffering() {
         buffering.setVisibility(View.GONE);
+        retryBtn.setVisibility(View.GONE);
     }
 
     private void showControls() {
         controls.setVisibility(View.VISIBLE);
+        titleBar.setVisibility(View.VISIBLE);
         controlsVisible = true;
         ui.removeCallbacks(hideRunnable);
         ui.postDelayed(hideRunnable, AUTO_HIDE_MS);
@@ -609,6 +756,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void hideControls() {
         controls.setVisibility(View.GONE);
+        titleBar.setVisibility(View.GONE);
         controlsVisible = false;
     }
 

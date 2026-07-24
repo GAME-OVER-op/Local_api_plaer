@@ -53,6 +53,10 @@ public class Util {
         }
     }
 
+    public static boolean isApk(String name) {
+        return name != null && name.toLowerCase().endsWith(".apk");
+    }
+
     public static String fmtTime(long ms) {
         if (ms < 0) ms = 0;
         long total = ms / 1000;

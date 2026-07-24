@@ -1,6 +1,6 @@
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::UdpSocket;
 use std::path::{Component, Path, PathBuf};
@@ -10,18 +10,28 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tiny_http::{Header, Request, Response, Server, StatusCode};
 
+// Баннер "обманки": так сервер представляется для любых посторонних запросов.
+// Ничего не говорит о реальной модели/устройстве. Меняйте по вкусу.
+const SERVER_BANNER: &str = "nginx/1.18.0 (Ubuntu)";
+
+const NGINX_WELCOME: &str = "<!DOCTYPE html>\n<html>\n<head>\n<title>Welcome to nginx!</title>\n<style>\nhtml { color-scheme: light dark; }\nbody { width: 35em; margin: 0 auto; font-family: Tahoma, Verdana, Arial, sans-serif; }\n</style>\n</head>\n<body>\n<h1>Welcome to nginx!</h1>\n<p>If you see this page, the nginx web server is successfully installed and\nworking. Further configuration is required.</p>\n\n<p>For online documentation and support please refer to\n<a href=\"http://nginx.org/\">nginx.org</a>.<br/>\nCommercial support is available at\n<a href=\"http://nginx.com/\">nginx.com</a>.</p>\n\n<p><em>Thank you for using nginx.</em></p>\n</body>\n</html>\n";
+
+const NGINX_404: &str = "<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\r\n</body>\r\n</html>\r\n";
+
+const NGINX_403: &str = "<html>\r\n<head><title>403 Forbidden</title></head>\r\n<body>\r\n<center><h1>403 Forbidden</h1></center>\r\n<hr><center>nginx/1.18.0 (Ubuntu)</center>\r\n</body>\r\n</html>\r\n";
+
 struct Config {
     host: String,
     port: u16,
     root: PathBuf,
     name: String,
     background: bool,
+    data_dir: PathBuf,
 }
 
 struct State {
     config: Config,
-    approved: Mutex<Vec<Value>>,
-    allowed_path: PathBuf,
+    knocks_path: PathBuf,
 }
 
 struct ApprovalReq {
@@ -31,12 +41,22 @@ struct ApprovalReq {
     resp: Sender<bool>,
 }
 
+fn default_data_dir() -> PathBuf {
+    // По умолчанию храним allowed.json/access.log рядом с самим бинарником.
+    // В Magisk-модуле это и есть папка модуля (/data/adb/modules/api_plaer).
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 fn parse_config() -> Config {
     let mut host = std::env::var("MEDIA_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let mut port: u16 = std::env::var("MEDIA_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(10930);
-    let mut root = std::env::var("MEDIA_ROOT").unwrap_or_else(|_| "/storage/emulated/0".to_string());
+    let mut root = std::env::var("MEDIA_ROOT").unwrap_or_else(|_| "/storage".to_string());
     let mut name = std::env::var("MEDIA_NAME").unwrap_or_else(|_| "media-server".to_string());
     let mut background = std::env::var("MEDIA_BACKGROUND").ok().as_deref() == Some("1");
+    let mut data_dir: Option<PathBuf> = std::env::var("MEDIA_DATA_DIR").ok().map(PathBuf::from);
 
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;
@@ -47,27 +67,30 @@ fn parse_config() -> Config {
             "-H" | "--host" => { if i + 1 < args.len() { host = args[i + 1].clone(); i += 1; } }
             "-p" | "--port" => { if i + 1 < args.len() { if let Ok(p) = args[i + 1].parse() { port = p; } i += 1; } }
             "-r" | "--root" => { if i + 1 < args.len() { root = args[i + 1].clone(); i += 1; } }
+            "-d" | "--data" => { if i + 1 < args.len() { data_dir = Some(PathBuf::from(args[i + 1].clone())); i += 1; } }
             "-n" | "--name" => { if i + 1 < args.len() { name = args[i + 1].clone(); i += 1; } }
             _ => {}
         }
         i += 1;
     }
 
-    Config { host, port, root: PathBuf::from(root), name, background }
+    Config { host, port, root: PathBuf::from(root), name, background, data_dir: data_dir.unwrap_or_else(default_data_dir) }
 }
 
 fn print_help() {
-    println!("media-server — файловый HTTP-сервер с подтверждением доступа");
+    println!("media-server — файловый HTTP-сервер с подтверждением доступа и маскировкой");
     println!();
     println!("Использование: media-server [опции]");
     println!("  -H, --host <адрес>   адрес прослушивания (0.0.0.0)");
     println!("  -p, --port <порт>    порт (10930)");
-    println!("  -r, --root <путь>    корневая папка (/storage/emulated/0)");
+    println!("  -r, --root <путь>    корневая папка (/storage)");
+    println!("  -d, --data <путь>    папка для allowed.json/access.log (по умолчанию — папка программы)");
     println!("  -n, --name <имя>     имя сервера для автообнаружения");
     println!("  -b, --background     фоновый режим: пускать только из allowed.json");
     println!("  -h, --help           эта справка");
     println!();
-    println!("Команды консоли: list, revoke <id|имя>, help");
+    println!("Для чужих запросов сервер маскируется под: {}", SERVER_BANNER);
+    println!("Команды консоли: list, revoke <id|имя>, stats, help");
 }
 
 fn load_allowed(path: &Path) -> Vec<Value> {
@@ -106,7 +129,7 @@ fn approve(approved: &Mutex<Vec<Value>>, path: &Path, id: &str, name: &str) {
     save_allowed(path, g.as_slice());
 }
 
-fn handle_command(cmd: &str, approved: &Mutex<Vec<Value>>, path: &Path) {
+fn handle_command(cmd: &str, approved: &Mutex<Vec<Value>>, allowed: &Path, knocks: &Path) {
     let c = cmd.trim();
     if c.is_empty() {
         return;
@@ -131,16 +154,43 @@ fn handle_command(cmd: &str, approved: &Mutex<Vec<Value>>, path: &Path) {
                 && r.get("name").and_then(|x| x.as_str()) != Some(arg)
         });
         let removed = before - g.len();
-        save_allowed(path, g.as_slice());
+        save_allowed(allowed, g.as_slice());
         println!("Отозвано записей: {}", removed);
+    } else if c == "stats" {
+        print_stats(knocks);
     } else if c == "help" {
-        println!("Команды: list, revoke <id|имя>, help");
+        println!("Команды: list, revoke <id|имя>, stats, help");
     } else {
         println!("Неизвестная команда: {} (help — список)", c);
     }
 }
 
-fn control_loop(rx: mpsc::Receiver<ApprovalReq>, approved: Arc<Mutex<Vec<Value>>>, path: PathBuf) {
+fn print_stats(path: &Path) {
+    match fs::read_to_string(path) {
+        Ok(s) => {
+            let lines: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
+            println!("Обращений к обманке всего: {}", lines.len());
+            let start = lines.len().saturating_sub(10);
+            for l in &lines[start..] {
+                if let Ok(v) = serde_json::from_str::<Value>(l) {
+                    let ts = v.get("ts").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let ip = v.get("ip").and_then(|x| x.as_str()).unwrap_or("");
+                    let url = v.get("url").and_then(|x| x.as_str()).unwrap_or("");
+                    let ua = v.get("ua").and_then(|x| x.as_str()).unwrap_or("");
+                    println!("  #{}  {}  {}  UA=\"{}\"", ts, ip, url, ua);
+                }
+            }
+        }
+        Err(_) => println!("Обращений пока нет."),
+    }
+}
+
+fn control_loop(
+    rx: mpsc::Receiver<ApprovalReq>,
+    approved: Arc<Mutex<Vec<Value>>>,
+    allowed: PathBuf,
+    knocks: PathBuf,
+) {
     let (line_tx, line_rx) = mpsc::channel::<String>();
     thread::spawn(move || {
         let stdin = io::stdin();
@@ -175,7 +225,7 @@ fn control_loop(rx: mpsc::Receiver<ApprovalReq>, approved: Arc<Mutex<Vec<Value>>
                     Ok(line) => {
                         let t = line.trim().to_lowercase();
                         if t == "y" || t == "yes" || t == "да" || t == "д" {
-                            approve(&approved, &path, &req.id, &req.name);
+                            approve(&approved, &allowed, &req.id, &req.name);
                             println!("Разрешено: {}", req.name);
                             let _ = req.resp.send(true);
                         } else {
@@ -191,7 +241,7 @@ fn control_loop(rx: mpsc::Receiver<ApprovalReq>, approved: Arc<Mutex<Vec<Value>>
             }
             Err(RecvTimeoutError::Timeout) => {
                 while let Ok(cmd) = line_rx.try_recv() {
-                    handle_command(&cmd, &approved, &path);
+                    handle_command(&cmd, &approved, &allowed, &knocks);
                 }
             }
             Err(RecvTimeoutError::Disconnected) => break,
@@ -226,7 +276,8 @@ fn spawn_discovery(name: String, port: u16) {
 
 fn main() {
     let config = parse_config();
-    let allowed_path = PathBuf::from("/data/adb/api_plaer/allowed.json");
+    let allowed_path = config.data_dir.join("allowed.json");
+    let knocks_path = config.data_dir.join("access.log");
     let approved = Arc::new(Mutex::new(load_allowed(&allowed_path)));
 
     let addr = format!("{}:{}", config.host, config.port);
@@ -238,9 +289,11 @@ fn main() {
         }
     };
 
-    println!("media-server: http://{}", addr);
+    println!("media-server: {{http://{}}}", addr);
     println!("Корневая папка: {}", config.root.display());
     println!("Имя сервера: {}", config.name);
+    println!("Маскировка для чужих запросов: {}", SERVER_BANNER);
+    println!("Папка данных (allowed.json / access.log): {}", config.data_dir.display());
     println!("Разрешённых устройств: {}", approved.lock().unwrap().len());
 
     spawn_discovery(config.name.clone(), config.port);
@@ -251,14 +304,14 @@ fn main() {
     } else {
         let (tx, rx) = mpsc::channel::<ApprovalReq>();
         let approved_c = Arc::clone(&approved);
-        let path_c = allowed_path.clone();
-        thread::spawn(move || control_loop(rx, approved_c, path_c));
-        println!("Подтверждайте доступ в этой консоли (y/n). Команды: list, revoke <id|имя>.");
+        let allowed_c = allowed_path.clone();
+        let knocks_c = knocks_path.clone();
+        thread::spawn(move || control_loop(rx, approved_c, allowed_c, knocks_c));
+        println!("Подтверждайте доступ в этой консоли (y/n). Команды: list, revoke <id|имя>, stats.");
         Some(tx)
     };
 
-    let state = Arc::new(State { config, approved: Mutex::new(load_allowed(&allowed_path)), allowed_path: allowed_path.clone() });
-    // share the same approved list between control thread and handlers
+    let state = Arc::new(State { config, knocks_path: knocks_path.clone() });
     let shared_approved = Arc::clone(&approved);
 
     let workers = thread::available_parallelism().map(|n| n.get()).unwrap_or(4).max(4);
@@ -312,6 +365,23 @@ fn authorize(
     }
 }
 
+fn log_knock(path: &Path, ip: &str, method: &str, url: &str, ua: &str) {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    // не даём логу разрастаться бесконечно
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > 1_000_000 {
+            let _ = fs::write(path, "");
+        }
+    }
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let line = json!({ "ts": ts, "ip": ip, "method": method, "url": url, "ua": ua }).to_string();
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{}", line);
+    }
+}
+
 fn handle(
     request: Request,
     state: &Arc<State>,
@@ -325,17 +395,31 @@ fn handle(
         None => (url.clone(), String::new()),
     };
 
-    if path_part == "/" || path_part == "/health" {
-        let s = respond_text(request, 200, "media-server ok");
-        println!("{} {} -> {}", method, url, s);
+    let ip = request.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default();
+    let ua = header_val(&request, "User-Agent");
+
+    // Наши эндпоинты. Всё остальное — фасад обычного веб-сервера.
+    let is_api = matches!(path_part.as_str(), "/list" | "/search" | "/download");
+
+    // Идентификатор устройства присылает только наше приложение
+    // (заголовки X-Device-* или query dev/dn для потока libVLC).
+    let hdr_id = header_val(&request, "X-Device-Id");
+    let q_dev = query_get(&query_part, "dev").unwrap_or_default();
+    let has_identity = !hdr_id.is_empty() || !q_dev.is_empty();
+
+    // Кто не говорит на нашем протоколе — видит только nginx/Ubuntu и попадает
+    // в статистику "стуков". Ни модель, ни устройство, ни реальный сервис не палятся.
+    if !is_api || !has_identity {
+        log_knock(&state.knocks_path, &ip, &method, &url, &ua);
+        let s = respond_decoy(request, &path_part);
+        println!("{} {} -> {} (обманка)", method, url, s);
         return;
     }
 
-    let mut id = header_val(&request, "X-Device-Id");
+    let mut id = hdr_id;
     let mut name = header_val(&request, "X-Device-Name");
-    let ip = request.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default();
     if id.is_empty() {
-        id = query_get(&query_part, "dev").unwrap_or_default();
+        id = q_dev;
     }
     if name.is_empty() {
         name = query_get(&query_part, "dn").unwrap_or_default();
@@ -348,7 +432,8 @@ fn handle(
     }
 
     if !authorize(approved, approval_tx, &id, &name, &ip) {
-        let s = respond_text(request, 403, "access denied");
+        log_knock(&state.knocks_path, &ip, &method, &url, &ua);
+        let s = respond_html(request, 403, NGINX_403);
         println!("{} {} -> {} ({})", method, url, s, name);
         return;
     }
@@ -360,11 +445,9 @@ fn handle(
         let q = query_get(&query_part, "q").unwrap_or_default();
         let rel = query_get(&query_part, "path").unwrap_or_default();
         respond_search(request, &state.config, &q, &rel)
-    } else if path_part == "/download" {
+    } else {
         let rel = query_get(&query_part, "path").unwrap_or_default();
         respond_download(request, &state.config, &rel)
-    } else {
-        respond_text(request, 404, "not found")
     };
     println!("{} {} -> {}", method, url, s);
 }
@@ -394,16 +477,44 @@ fn resolve(root: &Path, rel: &str) -> Option<PathBuf> {
     Some(path)
 }
 
+fn server_header() -> Header {
+    Header::from_bytes(&b"Server"[..], SERVER_BANNER.as_bytes()).unwrap()
+}
+
 fn respond_text(request: Request, code: u16, body: &str) -> u16 {
     let header = Header::from_bytes(&b"Content-Type"[..], &b"text/plain; charset=utf-8"[..]).unwrap();
-    let response = Response::from_string(body).with_status_code(StatusCode(code)).with_header(header);
+    let response = Response::from_string(body)
+        .with_status_code(StatusCode(code))
+        .with_header(header)
+        .with_header(server_header());
     let _ = request.respond(response);
     code
 }
 
+fn respond_html(request: Request, code: u16, body: &str) -> u16 {
+    let header = Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=UTF-8"[..]).unwrap();
+    let response = Response::from_string(body)
+        .with_status_code(StatusCode(code))
+        .with_header(header)
+        .with_header(server_header());
+    let _ = request.respond(response);
+    code
+}
+
+fn respond_decoy(request: Request, path: &str) -> u16 {
+    if path == "/" || path == "/index.html" {
+        respond_html(request, 200, NGINX_WELCOME)
+    } else {
+        respond_html(request, 404, NGINX_404)
+    }
+}
+
 fn respond_json(request: Request, code: u16, value: Value) -> u16 {
     let header = Header::from_bytes(&b"Content-Type"[..], &b"application/json; charset=utf-8"[..]).unwrap();
-    let response = Response::from_string(value.to_string()).with_status_code(StatusCode(code)).with_header(header);
+    let response = Response::from_string(value.to_string())
+        .with_status_code(StatusCode(code))
+        .with_header(header)
+        .with_header(server_header());
     let _ = request.respond(response);
     code
 }
@@ -528,13 +639,13 @@ fn respond_download(request: Request, config: &Config, rel: &str) -> u16 {
             let reader = file.take(length);
             let cr_value = format!("bytes {}-{}/{}", start, end, total);
             let cr = Header::from_bytes(&b"Content-Range"[..], cr_value.as_bytes()).unwrap();
-            let response = Response::new(StatusCode(206), vec![ct, cd, ar, cr], reader, Some(length as usize), None);
+            let response = Response::new(StatusCode(206), vec![ct, cd, ar, cr, server_header()], reader, Some(length as usize), None);
             let _ = request.respond(response);
             return 206;
         }
     }
 
-    let response = Response::new(StatusCode(200), vec![ct, cd, ar], file, Some(total as usize), None);
+    let response = Response::new(StatusCode(200), vec![ct, cd, ar, server_header()], file, Some(total as usize), None);
     let _ = request.respond(response);
     200
 }

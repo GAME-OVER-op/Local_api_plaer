@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg">
+
+    <ListView
+        android:id="@+id/dl_list"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:divider="@color/divider"
+        android:dividerHeight="1dp" />
+
+    <TextView
+        android:id="@+id/dl_empty"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text="Загрузок пока нет"
+        android:textColor="@color/text_secondary"
+        android:textSize="16sp"
+        android:visibility="gone" />
+</FrameLayout>
