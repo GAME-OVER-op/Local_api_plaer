@@ -1,0 +1,6 @@
+id=api_plaer
+name=api_plaer media-server
+version=v0.4.0
+versionCode=4
+author=api_plaer
+description=Rust media-server в фоне. Автозапуск после загрузки, файлы и логи в папке модуля, без монтирования в /system.

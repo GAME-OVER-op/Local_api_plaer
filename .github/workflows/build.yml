@@ -8,9 +8,6 @@ on:
 jobs:
   server:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: server
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,11 +19,52 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk
       - name: Build (aarch64)
+        working-directory: server
         run: cargo ndk -t arm64-v8a build --release
       - uses: actions/upload-artifact@v4
         with:
           name: media-server-aarch64
           path: server/target/aarch64-linux-android/release/media-server
+      - name: Package Magisk module
+        run: |
+          set -e
+          BUILD=magisk-build
+          rm -rf "$BUILD"
+          cp -a magisk "$BUILD"
+          cp server/target/aarch64-linux-android/release/media-server "$BUILD/media-server"
+          chmod 0755 "$BUILD/media-server" "$BUILD/service.sh" "$BUILD/customize.sh" "$BUILD/META-INF/com/google/android/update-binary"
+          (cd "$BUILD" && zip -r9 ../api_plaer-magisk.zip . -x '*.DS_Store')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-server-magisk
+          path: api_plaer-magisk.zip
+
+  server-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build (host)
+        working-directory: server
+        run: cargo build --release
+      - name: Masking headers self-test
+        working-directory: server
+        run: |
+          set -e
+          mkdir -p /tmp/mroot
+          MEDIA_ROOT=/tmp/mroot MEDIA_PORT=18080 MEDIA_BACKGROUND=1 MEDIA_DATA_DIR=/tmp \
+            ./target/release/media-server &
+          SRV=$!
+          sleep 2
+          echo "--- GET / (обманка) ---"
+          HDRS=$(curl -s -D - -o /dev/null http://127.0.0.1:18080/)
+          echo "$HDRS"
+          kill $SRV 2>/dev/null || true
+          COUNT=$(printf '%s\n' "$HDRS" | grep -ci '^Server:')
+          echo "Server header count = $COUNT"
+          test "$COUNT" -eq 1
+          printf '%s\n' "$HDRS" | grep -qi '^Server: nginx'
+          echo "OK: единственный Server-заголовок, маскировка под nginx"
 
   app:
     runs-on: ubuntu-latest

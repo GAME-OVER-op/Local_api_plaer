@@ -15,6 +15,24 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <TextView
+        android:id="@+id/title_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="#B3000000"
+        android:gravity="center"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:paddingTop="14dp"
+        android:paddingBottom="14dp"
+        android:singleLine="true"
+        android:ellipsize="middle"
+        android:textColor="#FFFFFF"
+        android:textSize="16sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/buffering"
         android:layout_width="wrap_content"
@@ -31,12 +49,22 @@
             style="?android:attr/progressBarStyleLarge" />
 
         <TextView
+            android:id="@+id/buffering_text"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
             android:text="Подготовка видео…"
             android:textColor="#FFFFFF"
             android:textSize="15sp" />
+
+        <Button
+            android:id="@+id/buffer_retry"
+            style="@style/PrimaryButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="Повторить"
+            android:visibility="gone" />
     </LinearLayout>
 
     <TextView

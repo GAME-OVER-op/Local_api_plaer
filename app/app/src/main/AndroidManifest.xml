@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <application
         android:name=".App"
@@ -22,6 +23,7 @@
             android:exported="true"
             android:theme="@style/AppTheme"
             android:screenOrientation="fullSensor"
+            android:windowSoftInputMode="stateAlwaysHidden"
             android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -38,6 +40,13 @@
             android:windowSoftInputMode="stateAlwaysHidden|adjustResize" />
 
         <activity
+            android:name=".DownloadsActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme"
+            android:screenOrientation="fullSensor"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <activity
             android:name=".SettingsActivity"
             android:exported="false"
             android:theme="@style/AppTheme"
@@ -50,5 +59,9 @@
             android:theme="@style/AppTheme.Fullscreen"
             android:screenOrientation="fullSensor"
             android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <service
+            android:name=".DownloadService"
+            android:exported="false" />
     </application>
 </manifest>
