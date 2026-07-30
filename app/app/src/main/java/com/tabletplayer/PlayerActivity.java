@@ -353,14 +353,24 @@ public class PlayerActivity extends AppCompatActivity {
         options.add("--network-caching=" + NET_CACHING);
         options.add("--file-caching=" + LOCAL_CACHING);
 
-        // Не выбрасываем опоздавшие видеокадры. Если декодер ненадолго
-        // отстанет от звука, libVLC должен показать накопившиеся кадры и
-        // догнать синхронизацию, а не перескочить вперёд.
+        // Не выбрасываем опоздавшие видеокадры. Эти два параметра
+        // поддерживаются libVLC 3.x и не требуют модульных значений.
         options.add("--no-drop-late-frames");
         options.add("--no-skip-frames");
-        options.add("--avcodec-hurry-up=0");
 
-        libVLC = new LibVLC(this, options);
+        try {
+            libVLC = new LibVLC(this, options);
+            PlaybackDiagnostics.log(this, "libvlc init frame-drop disabled");
+        } catch (RuntimeException | LinkageError error) {
+            // Старые/урезанные Android-сборки libVLC могут отказаться от
+            // необязательных параметров. Не роняем PlayerActivity: повторяем
+            // инициализацию только с базовыми настройками кэша.
+            PlaybackDiagnostics.log(this, "libvlc option fallback: " + error);
+            ArrayList<String> fallback = new ArrayList<>();
+            fallback.add("--network-caching=" + NET_CACHING);
+            fallback.add("--file-caching=" + LOCAL_CACHING);
+            libVLC = new LibVLC(this, fallback);
+        }
     }
 
     private MediaPlayer createPlayer(final int generation) {
