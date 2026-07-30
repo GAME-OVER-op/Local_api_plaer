@@ -47,6 +47,12 @@ public class App extends Application {
                 pw.println("Устройство: " + deviceName() + " / Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")");
                 pw.println();
                 e.printStackTrace(pw);
+                String playbackLog = PlaybackDiagnostics.readTail(this, 32768);
+                if (!playbackLog.isEmpty()) {
+                    pw.println();
+                    pw.println("=== Последние события плеера ===");
+                    pw.print(playbackLog);
+                }
                 pw.flush();
                 java.io.File f = new java.io.File(android.os.Environment.getExternalStorageDirectory(), "tablet_player_crash.txt");
                 java.io.FileOutputStream fos = new java.io.FileOutputStream(f);

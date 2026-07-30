@@ -47,6 +47,7 @@ public class PlayerActivity extends AppCompatActivity {
     private static final int AUTO_HIDE_MS = 3500;
     private static final long SWIPE_FULL_WIDTH_MS = 120000;
     private static final int NET_CACHING = 4000;
+    private static final int LOCAL_CACHING = 10000;
     private static final long POSITION_SAVE_INTERVAL_MS = 10000;
     private static final long CACHE_PREPARE_TIMEOUT_MS = 30000;
     private static final long CACHE_EARLY_ESTIMATE_MS = 8000;
@@ -57,6 +58,14 @@ public class PlayerActivity extends AppCompatActivity {
     private static final int SOURCE_DIRECT = 0;
     private static final int SOURCE_CACHE_PREPARING = 1;
     private static final int SOURCE_CACHE_LOCAL = 2;
+
+    private static final int STATE_IDLE = 0;
+    private static final int STATE_PREPARING = 1;
+    private static final int STATE_STARTING = 2;
+    private static final int STATE_PLAYING = 3;
+    private static final int STATE_SWITCHING = 4;
+    private static final int STATE_STOPPING = 5;
+    private static final int STATE_DESTROYED = 6;
 
     private String base, path, name, folder, serverName;
     private boolean local = false;
@@ -91,8 +100,24 @@ public class PlayerActivity extends AppCompatActivity {
     private boolean ignoreGestureSequence = false;
     private boolean viewsDetached = false;
     private boolean destroyed = false;
-    private boolean suppressTerminalEvents = false;
     private boolean localPlaybackEstablished = false;
+    private boolean playingFromCompletedFile = false;
+    private boolean switchedToCompletedFile = false;
+    private boolean fallbackInProgress = false;
+    private int playbackState = STATE_IDLE;
+    private int mediaGeneration = 0;
+    private int currentVoutCount = 0;
+    private boolean forceSoftwareDecoder = false;
+    private boolean softwareRetryUsed = false;
+    private Uri currentMediaUri;
+    private boolean currentMediaNetwork = false;
+    private boolean currentMediaLocalSource = false;
+    private long zeroVoutSinceMs = 0L;
+    private long lastVoutProgressMs = 0L;
+    private boolean surfaceRecoveryPending = false;
+    private QueuePrefetcher queuePrefetcher;
+    private boolean prefetchStartedForCurrent = false;
+    private boolean cacheSessionReleased = false;
     private final Set<String> directOnlyThisSession = new HashSet<>();
 
     private final float[] speeds = {1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f};
@@ -142,18 +167,12 @@ public class PlayerActivity extends AppCompatActivity {
             }
         }
     };
-    private final Runnable clearTerminalSuppression = new Runnable() {
-        @Override
-        public void run() {
-            suppressTerminalEvents = false;
-        }
-    };
-
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_player);
+        CacheFiles.acquireSession(this);
 
         base = getIntent().getStringExtra("base");
         path = getIntent().getStringExtra("path");
@@ -179,6 +198,9 @@ public class PlayerActivity extends AppCompatActivity {
                     knownFileSizes.put(queuePathsExtra[qi], queueSizesExtra[qi]);
                 }
             }
+            queuePrefetcher = new QueuePrefetcher(this, (prefetchPath, downloaded, total, complete) -> {
+                if (!destroyed) ui.post(this::updateCacheUi);
+            });
         }
 
         volume = Store.getVolume(this, 100);
@@ -220,6 +242,14 @@ public class PlayerActivity extends AppCompatActivity {
         next.setOnClickListener(v -> { playNext(); showControls(); });
         speed.setOnClickListener(v -> { cycleSpeed(); showControls(); });
         aspect.setOnClickListener(v -> { cycleAspect(); showControls(); });
+        aspect.setOnLongClickListener(v -> {
+            if (currentMediaUri == null || player == null || sourceMode == SOURCE_CACHE_PREPARING) return false;
+            forceSoftwareDecoder = !forceSoftwareDecoder;
+            softwareRetryUsed = forceSoftwareDecoder;
+            restartCurrentDecoder(forceSoftwareDecoder
+                    ? "Программный декодер" : "Аппаратный декодер");
+            return true;
+        });
         fullscreen.setOnClickListener(v -> { toggleImmersive(); showControls(); });
 
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -260,21 +290,33 @@ public class PlayerActivity extends AppCompatActivity {
     private void initPlayer() {
         ArrayList<String> options = new ArrayList<>();
         options.add("--network-caching=" + NET_CACHING);
-        options.add("--file-caching=" + NET_CACHING);
+        options.add("--file-caching=" + LOCAL_CACHING);
         libVLC = new LibVLC(this, options);
-        player = new MediaPlayer(libVLC);
-        player.attachViews(videoLayout, null, false, false);
-        player.setEventListener(event -> {
-            final int type = event.type;
-            final float pct = (type == MediaPlayer.Event.Buffering) ? event.getBuffering() : 0f;
-            ui.post(() -> handlePlayerEvent(type, pct));
-        });
     }
 
-    private void handlePlayerEvent(int type, float pct) {
-        if (destroyed || player == null || sourceMode == SOURCE_CACHE_PREPARING) return;
-        if (suppressTerminalEvents
-                && (type == MediaPlayer.Event.EndReached || type == MediaPlayer.Event.EncounteredError)) {
+    private MediaPlayer createPlayer(final int generation) {
+        MediaPlayer created = new MediaPlayer(libVLC);
+        created.attachViews(videoLayout, null, false, false);
+        viewsDetached = false;
+        created.setEventListener(event -> {
+            final int type = event.type;
+            final float pct = type == MediaPlayer.Event.Buffering ? event.getBuffering() : 0f;
+            final int vout = type == MediaPlayer.Event.Vout ? event.getVoutCount() : -1;
+            ui.post(() -> handlePlayerEvent(generation, type, pct, vout));
+        });
+        return created;
+    }
+
+    private void handlePlayerEvent(int generation, int type, float pct, int vout) {
+        if (destroyed || generation != mediaGeneration || player == null
+                || sourceMode == SOURCE_CACHE_PREPARING) return;
+        if (type == MediaPlayer.Event.Vout) {
+            currentVoutCount = Math.max(0, vout);
+            if (currentVoutCount > 0) {
+                surfaceRecoveryPending = false;
+                zeroVoutSinceMs = 0L;
+                ui.postDelayed(this::applyAspect, 100L);
+            }
             return;
         }
         switch (type) {
@@ -282,6 +324,8 @@ public class PlayerActivity extends AppCompatActivity {
                 reconnectAttempts = 0;
                 reconnecting = false;
                 started = true;
+                playbackState = STATE_PLAYING;
+                fallbackInProgress = false;
                 if (sourceMode != SOURCE_CACHE_LOCAL) ui.removeCallbacks(localStartTimeout);
                 if (pendingResumeMs > 0) {
                     long target = pendingResumeMs;
@@ -298,8 +342,10 @@ public class PlayerActivity extends AppCompatActivity {
             case MediaPlayer.Event.Buffering:
                 if (sourceMode == SOURCE_CACHE_LOCAL) {
                     if (!started) {
-                        showBuffering("Запуск из локального кэша…");
-                    } else if (playbackCache != null && (playbackCache.isWaitingForData() || waitingSeekMs > 0)) {
+                        showBuffering(playingFromCompletedFile
+                                ? "Запуск локального файла…" : "Запуск из локального кэша…");
+                    } else if (playbackCache != null
+                            && (playbackCache.isWaitingForData() || waitingSeekMs > 0)) {
                         showCacheWaiting();
                     } else if (pct >= 100f) {
                         waitingSeekMs = 0;
@@ -321,8 +367,17 @@ public class PlayerActivity extends AppCompatActivity {
                 handleEnd();
                 break;
             case MediaPlayer.Event.EncounteredError:
-                if (sourceMode == SOURCE_CACHE_LOCAL) fallbackToDirect("Формат не поддержал локальную дозагрузку");
-                else handleDrop();
+                PlaybackDiagnostics.log(this, "error gen=" + generation + " mode=" + sourceMode
+                        + " file=" + playingFromCompletedFile + " vout=" + currentVoutCount);
+                if ((playingFromCompletedFile || local) && !softwareRetryUsed) {
+                    forceSoftwareDecoder = true;
+                    softwareRetryUsed = true;
+                    restartCurrentDecoder("Повтор с программным декодером");
+                } else if (sourceMode == SOURCE_CACHE_LOCAL && !playingFromCompletedFile) {
+                    fallbackToDirect("Формат не поддержал локальную дозагрузку");
+                } else {
+                    handleDrop();
+                }
                 break;
         }
     }
@@ -403,23 +458,30 @@ public class PlayerActivity extends AppCompatActivity {
         }
     }
 
-    private Media buildMedia(Uri uri, boolean network) {
+    private Media buildMedia(Uri uri, boolean network, boolean localSource) {
         Media media = new Media(libVLC, uri);
-        media.setHWDecoderEnabled(true, false);
-        media.addOption((network ? ":network-caching=" : ":file-caching=") + NET_CACHING);
+        media.setHWDecoderEnabled(!forceSoftwareDecoder, false);
+        int caching = localSource ? LOCAL_CACHING : NET_CACHING;
+        media.addOption((network ? ":network-caching=" : ":file-caching=") + caching);
+        media.addOption(":live-caching=" + caching);
         return media;
     }
 
     private void playPath(String p, String nm, long resume) {
         ui.removeCallbacks(cacheDecision);
         ui.removeCallbacks(localStartTimeout);
-        if (player != null) {
-            stopPlayerForTransition();
-            updatePlayIcon();
+        fallbackInProgress = false;
+        playbackState = STATE_SWITCHING;
+        String previousPath = path;
+        if (queuePrefetcher != null) queuePrefetcher.pauseFor(p);
+        releasePlayerForTransition();
+        stopPlaybackCache(!hasQueue);
+        if (hasQueue && previousPath != null && !previousPath.equals(p)) {
+            CacheFiles.delete(this, base, previousPath);
         }
-        stopPlaybackCache();
         path = p;
         name = nm;
+        PlaybackDiagnostics.log(this, "play path=" + p + " resume=" + resume + " queue=" + hasQueue);
         pendingResumeMs = resume;
         currentMs = resume;
         duration = 0;
@@ -429,16 +491,25 @@ public class PlayerActivity extends AppCompatActivity {
         lastKnownDuration = Store.getDuration(this, p);
         started = false;
         localPlaybackEstablished = false;
+        playingFromCompletedFile = false;
+        switchedToCompletedFile = false;
+        prefetchStartedForCurrent = false;
+        forceSoftwareDecoder = false;
+        softwareRetryUsed = false;
+        currentVoutCount = 0;
+        zeroVoutSinceMs = 0L;
+        lastVoutProgressMs = resume;
         waitingSeekMs = 0;
         if (!local) updateEpisodeIndex();
         setTitle(nm);
         titleBar.setText(nm);
         cacheStatus.setVisibility(View.GONE);
+        seek.setSecondaryProgress(0);
         showControls();
 
         if (local) {
             sourceMode = SOURCE_DIRECT;
-            startMedia(Uri.fromFile(new File(p)), resume, false, "Подготовка…");
+            startMedia(Uri.fromFile(new File(p)), resume, false, false, "Подготовка…");
         } else if (isFarResume(resume, lastKnownDuration) || directOnlyThisSession.contains(p)) {
             startDirectPlayback(resume, isFarResume(resume, lastKnownDuration)
                     ? "Быстрое продолжение с сервера…" : "Прямое воспроизведение…");
@@ -452,30 +523,43 @@ public class PlayerActivity extends AppCompatActivity {
                 || (knownDuration > 0 && resume > 0 && resume * 10L >= knownDuration);
     }
 
-    private void startMedia(Uri uri, long resume, boolean network, String message) {
-        if (player == null) return;
+    private void startMedia(Uri uri, long resume, boolean network, boolean localSource, String message) {
+        if (destroyed || libVLC == null) return;
+        releasePlayerForTransition();
+        final int generation = ++mediaGeneration;
+        player = createPlayer(generation);
+        currentMediaUri = uri;
+        currentMediaNetwork = network;
+        currentMediaLocalSource = localSource;
         pendingResumeMs = resume;
         currentMs = resume;
         started = false;
+        playbackState = STATE_STARTING;
         if (message != null && !message.isEmpty()) showBuffering(message);
-        Media media = buildMedia(uri, network);
+        Media media = buildMedia(uri, network, localSource);
         player.setMedia(media);
         media.release();
         player.play();
         player.setRate(speeds[speedIdx]);
+        PlaybackDiagnostics.log(this, "start gen=" + generation + " mode=" + sourceMode
+                + " sw=" + forceSoftwareDecoder + " source="
+                + (localSource ? "cache" : (network ? "network" : "file")));
     }
 
     private void startDirectPlayback(long resume, String message) {
         ui.removeCallbacks(cacheDecision);
         ui.removeCallbacks(localStartTimeout);
-        stopPlaybackCache();
+        stopPlaybackCache(!hasQueue);
         sourceMode = SOURCE_DIRECT;
+        playingFromCompletedFile = false;
         cacheStatus.setVisibility(View.GONE);
-        startMedia(Uri.parse(streamUrl(path)), resume, true, message);
+        seek.setSecondaryProgress(0);
+        startMedia(Uri.parse(streamUrl(path)), resume, true, false, message);
     }
 
     private void startCachePreparation(long resume) {
         sourceMode = SOURCE_CACHE_PREPARING;
+        playbackState = STATE_PREPARING;
         cacheRequestedResumeMs = resume;
         showCachePreparation();
         try {
@@ -483,7 +567,7 @@ public class PlayerActivity extends AppCompatActivity {
                 if (!destroyed) ui.post(this::updateCacheUi);
             });
             Long knownSize = knownFileSizes.get(path);
-            playbackCache.start(base, path, knownSize == null ? -1L : knownSize);
+            playbackCache.start(base, path, knownSize == null ? -1L : knownSize, lastKnownDuration);
             ui.post(cacheDecision);
         } catch (Throwable e) {
             fallbackToDirect("Локальный кэш недоступен");
@@ -491,74 +575,121 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void evaluateCachePreparation() {
-        if (sourceMode != SOURCE_CACHE_PREPARING || playbackCache == null) return;
+        if (sourceMode != SOURCE_CACHE_PREPARING || playbackCache == null || fallbackInProgress) return;
         updateCacheUi();
         if (playbackCache.isFailed()) {
             fallbackToDirect(playbackCache.getError());
             return;
         }
-        if (playbackCache.isReadyToPlay()) {
+        long elapsed = System.currentTimeMillis() - playbackCache.getStartedAtMs();
+        boolean timedOut = elapsed >= CACHE_PREPARE_TIMEOUT_MS;
+        if (playbackCache.isReadyToPlay(lastKnownDuration, speeds[speedIdx], timedOut)) {
             startLocalCachePlayback();
             return;
         }
-        long elapsed = System.currentTimeMillis() - playbackCache.getStartedAtMs();
-        if (elapsed >= CACHE_PREPARE_TIMEOUT_MS) {
-            fallbackToDirect("Подготовка заняла больше 30 секунд");
+        if (timedOut) {
+            fallbackToDirect("Скорости недостаточно для устойчивого просмотра");
             return;
         }
-        long downloaded = playbackCache.getDownloadedBytes();
-        long target = playbackCache.getPrepareTargetBytes();
-        if (elapsed >= CACHE_EARLY_ESTIMATE_MS && downloaded >= 4L * 1024L * 1024L && target > downloaded) {
-            long projected = elapsed * target / Math.max(1L, downloaded);
-            if (projected > CACHE_PREPARE_TIMEOUT_MS + 15000L) {
-                fallbackToDirect("Скорости недостаточно для быстрой подготовки");
-                return;
-            }
+        if (elapsed >= CACHE_EARLY_ESTIMATE_MS
+                && playbackCache.shouldFallbackEarly(lastKnownDuration, speeds[speedIdx])) {
+            fallbackToDirect("Скорости недостаточно для быстрой подготовки");
+            return;
         }
-        ui.postDelayed(cacheDecision, 250L);
+        ui.postDelayed(cacheDecision, 300L);
     }
 
     private void startLocalCachePlayback() {
-        if (playbackCache == null || playbackCache.localUrl() == null) {
+        PlaybackCache cache = playbackCache;
+        if (cache == null) {
             fallbackToDirect("Локальный кэш недоступен");
             return;
         }
         sourceMode = SOURCE_CACHE_LOCAL;
         localPlaybackEstablished = false;
-        showBuffering("Запуск из локального кэша…");
+        playingFromCompletedFile = cache.isComplete();
+        playbackState = STATE_STARTING;
         updateCacheUi();
-        startMedia(Uri.parse(playbackCache.localUrl()), cacheRequestedResumeMs, true,
-                "Запуск из локального кэша…");
+        if (playingFromCompletedFile && cache.getCacheFile() != null) {
+            startMedia(Uri.fromFile(cache.getCacheFile()), cacheRequestedResumeMs, false, true,
+                    "Запуск локального файла…");
+        } else {
+            String localUrl = cache.localUrl();
+            if (localUrl == null) {
+                fallbackToDirect("Локальный кэш недоступен");
+                return;
+            }
+            startMedia(Uri.parse(localUrl), cacheRequestedResumeMs, true, true,
+                    "Запуск из локального кэша…");
+        }
         ui.postDelayed(localStartTimeout, CACHE_LOCAL_START_TIMEOUT_MS);
     }
 
     private void fallbackToDirect(String reason) {
-        if (local || path == null || player == null) return;
+        if (local || path == null || destroyed || fallbackInProgress
+                || sourceMode == SOURCE_DIRECT || playbackState == STATE_DESTROYED) return;
+        fallbackInProgress = true;
+        playbackState = STATE_SWITCHING;
         long resume = waitingSeekMs > 0 ? waitingSeekMs
-                : (player.getTime() > 0 ? player.getTime()
+                : (player != null && player.getTime() > 0 ? player.getTime()
                 : (pendingResumeMs > 0 ? pendingResumeMs : cacheRequestedResumeMs));
         directOnlyThisSession.add(path);
         waitingSeekMs = 0;
+        PlaybackDiagnostics.log(this, "fallback path=" + path + " reason=" + reason + " at=" + resume);
         if (reason != null && !reason.isEmpty()) {
             Toast.makeText(this, reason + ". Переключение на сервер.", Toast.LENGTH_SHORT).show();
         }
-        stopPlayerForTransition();
+        releasePlayerForTransition();
         startDirectPlayback(resume, "Запуск прямого воспроизведения…");
     }
 
-    private void stopPlayerForTransition() {
-        if (player == null) return;
-        suppressTerminalEvents = true;
-        ui.removeCallbacks(clearTerminalSuppression);
-        try { player.stop(); } catch (Throwable ignored) {}
-        ui.postDelayed(clearTerminalSuppression, 750L);
+    private void releasePlayerForTransition() {
+        MediaPlayer old = player;
+        player = null;
+        mediaGeneration++;
+        currentVoutCount = 0;
+        if (old == null) return;
+        try { old.setEventListener(null); } catch (Throwable ignored) {}
+        try { old.stop(); } catch (Throwable ignored) {}
+        try { old.detachViews(); } catch (Throwable ignored) {}
+        try { old.release(); } catch (Throwable ignored) {}
+        viewsDetached = false;
     }
 
-    private void stopPlaybackCache() {
+    private void stopPlaybackCache(boolean deleteFile) {
         PlaybackCache cache = playbackCache;
         playbackCache = null;
-        if (cache != null) cache.cancelAndDelete();
+        if (cache != null) {
+            if (deleteFile) cache.cancelAndDelete();
+            else cache.cancelKeepFile();
+        }
         cacheStatus.setVisibility(View.GONE);
+    }
+
+    private void maybeStartQueuePrefetch() {
+        if (!hasQueue || queuePrefetcher == null || prefetchStartedForCurrent
+                || episodeIndex < 0 || episodePaths.isEmpty()) return;
+        PlaybackCache cache = playbackCache;
+        if (cache == null || !cache.isComplete()) return;
+        prefetchStartedForCurrent = true;
+        queuePrefetcher.updateWindow(base, episodePaths, knownFileSizes, episodeIndex);
+    }
+
+    private void switchToCompletedFileIfUseful() {
+        PlaybackCache cache = playbackCache;
+        if (cache == null || !cache.isComplete() || playingFromCompletedFile
+                || switchedToCompletedFile || sourceMode != SOURCE_CACHE_LOCAL
+                || !started || fallbackInProgress) return;
+        if (duration > 0 && duration - currentMs < 30000L) return;
+        File file = cache.getCacheFile();
+        if (file == null || !file.exists()) return;
+        switchedToCompletedFile = true;
+        long resume = Math.max(currentMs, player != null ? player.getTime() : 0L);
+        cache.stopServingKeepFile();
+        playingFromCompletedFile = true;
+        localPlaybackEstablished = false;
+        startMedia(Uri.fromFile(file), resume, false, true, "Переход на локальный файл…");
+        ui.postDelayed(localStartTimeout, CACHE_LOCAL_START_TIMEOUT_MS);
     }
 
     private void playEpisode(int index) {
@@ -676,7 +807,7 @@ public class PlayerActivity extends AppCompatActivity {
     private void reloadStream(long ms) {
         if (player == null) return;
         sourceMode = SOURCE_DIRECT;
-        startMedia(Uri.parse(streamUrl(path)), ms, true, null);
+        startMedia(Uri.parse(streamUrl(path)), ms, true, false, null);
     }
 
     private void rediscover(final long ms) {
@@ -893,8 +1024,10 @@ public class PlayerActivity extends AppCompatActivity {
         waitingSeekMs = 0;
         currentMs = target;
         if (sourceMode == SOURCE_CACHE_LOCAL && playbackCache != null
-                && duration > 0 && playbackCache.getTotalBytes() > 0) {
+                && duration > 0 && playbackCache.getTotalBytes() > 0
+                && !playingFromCompletedFile) {
             long wantedByte = playbackCache.getTotalBytes() * target / duration;
+            playbackCache.requestUserSeekByte(wantedByte);
             if (wantedByte > playbackCache.getDownloadedBytes()) {
                 waitingSeekMs = target;
                 showCacheWaiting();
@@ -903,9 +1036,22 @@ public class PlayerActivity extends AppCompatActivity {
         player.setTime(target);
     }
 
+    private void restartCurrentDecoder(String message) {
+        if (currentMediaUri == null || destroyed) return;
+        long resume = currentMs;
+        try {
+            if (player != null && player.getTime() > 0) resume = player.getTime();
+        } catch (Throwable ignored) {}
+        PlaybackDiagnostics.log(this, "decoder restart sw=" + forceSoftwareDecoder + " at=" + resume);
+        flashInfo(message);
+        startMedia(currentMediaUri, resume, currentMediaNetwork, currentMediaLocalSource, message + "…");
+        if (sourceMode == SOURCE_CACHE_LOCAL) ui.postDelayed(localStartTimeout, CACHE_LOCAL_START_TIMEOUT_MS);
+    }
+
     private void cycleSpeed() {
         speedIdx = (speedIdx + 1) % speeds.length;
-        player.setRate(speeds[speedIdx]);
+        if (player != null) player.setRate(speeds[speedIdx]);
+        if (playbackCache != null) playbackCache.updatePlaybackInfo(duration, speeds[speedIdx], currentMs);
         speed.setText(speeds[speedIdx] + "x");
     }
 
@@ -972,6 +1118,7 @@ public class PlayerActivity extends AppCompatActivity {
                 float totalY = e2.getY() - e1.getY();
                 if (!dragging || mode == 0) {
                     if (Math.abs(totalX) > Math.abs(totalY) && Math.abs(totalX) > 40) {
+                        if (player == null || sourceMode == SOURCE_CACHE_PREPARING) return false;
                         mode = 1;
                         dragging = true;
                         dragStartTime = player.getTime();
@@ -1065,22 +1212,28 @@ public class PlayerActivity extends AppCompatActivity {
         PlaybackCache cache = playbackCache;
         if (cache == null) {
             cacheStatus.setVisibility(View.GONE);
+            if (sourceMode != SOURCE_CACHE_LOCAL) seek.setSecondaryProgress(0);
             return;
         }
-        if (cache.isFailed() && sourceMode == SOURCE_CACHE_LOCAL) {
+        if (cache.isFailed() && sourceMode == SOURCE_CACHE_LOCAL && !playingFromCompletedFile) {
             fallbackToDirect(cache.getError());
             return;
         }
         long downloaded = cache.getDownloadedBytes();
         long total = cache.getTotalBytes();
+        if (total > 0) {
+            seek.setSecondaryProgress((int) Math.min(1000L, downloaded * 1000L / total));
+        }
         if (sourceMode == SOURCE_CACHE_PREPARING) {
             long target = cache.getPrepareTargetBytes();
             int progress = target > 0 ? (int) Math.min(1000L, downloaded * 1000L / target) : 0;
             bufferSpinner.setVisibility(View.GONE);
             bufferProgress.setVisibility(View.VISIBLE);
             bufferProgress.setProgress(progress);
+            String speedText = cache.getBytesPerSecond() > 0
+                    ? " · " + Util.humanSize(cache.getBytesPerSecond()) + "/с" : "";
             bufferingText.setText("Подготовка серии\n" + Util.humanSize(downloaded)
-                    + " из " + Util.humanSize(target));
+                    + " из " + Util.humanSize(target) + speedText);
             buffering.setVisibility(View.VISIBLE);
             return;
         }
@@ -1093,6 +1246,10 @@ public class PlayerActivity extends AppCompatActivity {
         }
         if (sourceMode == SOURCE_CACHE_LOCAL && cache.isWaitingForData() && started) {
             showCacheWaiting();
+        }
+        if (cache.isComplete()) {
+            maybeStartQueuePrefetch();
+            if (!playingFromCompletedFile) ui.post(this::switchToCompletedFileIfUseful);
         }
     }
 
@@ -1149,12 +1306,30 @@ public class PlayerActivity extends AppCompatActivity {
         // В момент естественного окончания libVLC иногда сначала возвращает 0,
         // а затем присылает EndReached. Не затираем последнюю реальную позицию.
         if (reportedTime > 0 || currentMs <= 0 || !started) currentMs = Math.max(0L, reportedTime);
+        PlaybackCache activeCache = playbackCache;
+        if (activeCache != null) activeCache.updatePlaybackInfo(duration, speeds[speedIdx], currentMs);
         if (sourceMode == SOURCE_CACHE_LOCAL && !localPlaybackEstablished
                 && reportedTime >= 1000L) {
             localPlaybackEstablished = true;
-            PlaybackCache cache = playbackCache;
-            if (cache != null) cache.markPlaybackEstablished();
+            if (activeCache != null) activeCache.markPlaybackEstablished();
             ui.removeCallbacks(localStartTimeout);
+        }
+        if (surfaceRecoveryPending && player.isPlaying() && reportedTime > lastVoutProgressMs + 500L) {
+            long now = System.currentTimeMillis();
+            if (currentVoutCount <= 0) {
+                if (zeroVoutSinceMs == 0L) zeroVoutSinceMs = now;
+                if (now - zeroVoutSinceMs >= 6000L && !softwareRetryUsed) {
+                    forceSoftwareDecoder = true;
+                    softwareRetryUsed = true;
+                    surfaceRecoveryPending = false;
+                    restartCurrentDecoder("Восстановление изображения");
+                    return;
+                }
+            } else {
+                surfaceRecoveryPending = false;
+                zeroVoutSinceMs = 0L;
+            }
+            lastVoutProgressMs = reportedTime;
         }
         time.setText(Util.fmtTime(currentMs) + " / " + Util.fmtTime(duration));
         if (duration > 0 && !dragging) seek.setProgress((int) (currentMs * 1000 / duration));
@@ -1200,6 +1375,9 @@ public class PlayerActivity extends AppCompatActivity {
             try {
                 player.attachViews(videoLayout, null, false, false);
                 viewsDetached = false;
+                surfaceRecoveryPending = true;
+                zeroVoutSinceMs = 0L;
+                lastVoutProgressMs = currentMs;
                 ui.postDelayed(this::applyAspect, 180L);
             } catch (Throwable ignored) {
             }
@@ -1217,6 +1395,8 @@ public class PlayerActivity extends AppCompatActivity {
             try {
                 player.detachViews();
                 viewsDetached = true;
+                currentVoutCount = 0;
+                zeroVoutSinceMs = 0L;
             } catch (Throwable ignored) {
             }
         }
@@ -1232,8 +1412,13 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     public void onBackPressed() {
         saveCurrentPosition(true);
-        if (player != null) stopPlayerForTransition();
-        stopPlaybackCache();
+        playbackState = STATE_STOPPING;
+        releasePlayerForTransition();
+        stopPlaybackCache(true);
+        if (queuePrefetcher != null) {
+            queuePrefetcher.closeAndClear();
+            queuePrefetcher = null;
+        }
         super.onBackPressed();
         overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }
@@ -1241,24 +1426,23 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         destroyed = true;
-        suppressTerminalEvents = true;
+        playbackState = STATE_DESTROYED;
         ui.removeCallbacksAndMessages(null);
         if (session != null) session.release();
         if (audioManager != null) audioManager.abandonAudioFocus(focusListener);
-        if (player != null) {
-            try { player.stop(); } catch (Throwable ignored) {}
-            if (!viewsDetached) {
-                try { player.detachViews(); } catch (Throwable ignored) {}
-            }
-            try { player.release(); } catch (Throwable ignored) {}
-            player = null;
+        releasePlayerForTransition();
+        stopPlaybackCache(true);
+        if (queuePrefetcher != null) {
+            queuePrefetcher.closeAndClear();
+            queuePrefetcher = null;
         }
-        // Сначала libVLC окончательно закрывает локальный HTTP-поток, только после
-        // этого останавливаем кэш и удаляем его уникальный временный файл.
-        stopPlaybackCache();
         if (libVLC != null) {
             try { libVLC.release(); } catch (Throwable ignored) {}
             libVLC = null;
+        }
+        if (!cacheSessionReleased) {
+            cacheSessionReleased = true;
+            CacheFiles.releaseSession(this);
         }
         super.onDestroy();
     }

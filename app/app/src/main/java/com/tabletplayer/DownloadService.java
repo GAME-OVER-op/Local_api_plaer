@@ -212,6 +212,8 @@ public class DownloadService extends Service {
     }
 
     private void download(int id, String base, String path, String name, boolean install) {
+        try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); }
+        catch (Throwable ignored) {}
         NotificationManagerCompat nm = NotificationManagerCompat.from(this);
         NotificationCompat.Builder nb = builder(id, name);
         boolean cancelled = false;
@@ -220,8 +222,10 @@ public class DownloadService extends Service {
         long done = 0;
         long total = -1;
 
+        TransferCoordinator.Lease transferLease = null;
         try {
             if (base == null || path == null || name == null) throw new IllegalArgumentException("нет данных загрузки");
+            transferLease = TransferCoordinator.acquire(TransferCoordinator.MANUAL_DOWNLOAD);
             File parent = out.getParentFile();
             if (parent == null || (!parent.exists() && !parent.mkdirs())) throw new RuntimeException("не удалось создать папку");
 
@@ -253,7 +257,7 @@ public class DownloadService extends Service {
                     total = totalLength(c, existing, append);
                     in = c.getInputStream();
                     fos = new FileOutputStream(part, append);
-                    byte[] buf = new byte[65536];
+                    byte[] buf = new byte[256 * 1024];
                     done = existing;
                     int r;
                     int lastPct = -1;
@@ -300,6 +304,8 @@ public class DownloadService extends Service {
             CANCELLED.remove(id);
             finishOne();
             return;
+        } finally {
+            if (transferLease != null) transferLease.release();
         }
 
         if (cancelled) {
@@ -328,6 +334,7 @@ public class DownloadService extends Service {
             App.auth(c, this);
             c.setConnectTimeout(8000);
             c.setReadTimeout(40000);
+            c.setRequestProperty("Accept-Encoding", "identity");
             if (existing > 0) c.setRequestProperty("Range", "bytes=" + existing + "-");
             int code = c.getResponseCode();
             if (code == 403 && attempt == 0 && App.retryPairingAfterForbidden(this, c)) {
