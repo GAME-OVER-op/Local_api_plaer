@@ -166,6 +166,8 @@
                 android:layout_weight="1"
                 android:layout_marginLeft="10dp"
                 android:layout_marginRight="10dp"
+                android:minHeight="2dp"
+                android:maxHeight="2dp"
                 android:max="1000"
                 android:progressDrawable="@drawable/player_seek_progress" />
         </LinearLayout>
