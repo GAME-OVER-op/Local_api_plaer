@@ -17,11 +17,17 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
-import java.util.Locale;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -36,18 +42,24 @@ final class PlaybackCache {
 
     private static final long MAX_PREPARE_BYTES = 300L * 1024L * 1024L;
     private static final long SEEK_AHEAD_BYTES = 32L * 1024L * 1024L;
+    private static final long METADATA_TAIL_WINDOW_BYTES = 64L * 1024L * 1024L;
+    private static final long MAX_METADATA_RANGE_BYTES = 32L * 1024L * 1024L;
     private static final long STORAGE_RESERVE_BYTES = 64L * 1024L * 1024L;
     private static final int BUFFER_SIZE = 256 * 1024;
 
     private final Context context;
     private final Listener listener;
     private final Object dataLock = new Object();
+    private final Object stopLock = new Object();
     private final AtomicInteger waitingClients = new AtomicInteger();
+    private final AtomicInteger metadataRequests = new AtomicInteger();
     private final AtomicLong waitingOffset = new AtomicLong(-1L);
 
     private final File cacheDir;
     private final File cacheFile;
     private volatile boolean cancelled;
+    private volatile boolean deleteWhenStopped;
+    private volatile boolean playbackEstablished;
     private volatile boolean complete;
     private volatile boolean failed;
     private volatile String error = "";
@@ -59,18 +71,21 @@ final class PlaybackCache {
     private Thread downloadThread;
     private HttpURLConnection remoteConnection;
     private LocalHttpServer localServer;
+    private volatile String remoteUrl;
 
     PlaybackCache(Context context, Listener listener) {
         this.context = context.getApplicationContext();
         this.listener = listener;
         File external = context.getExternalCacheDir();
         cacheDir = new File(external != null ? external : context.getCacheDir(), "playback");
-        cacheFile = new File(cacheDir, "current.part");
+        cacheFile = new File(cacheDir, "current_" + Long.toHexString(System.nanoTime()) + ".part");
     }
 
     void start(final String base, final String path, long knownTotalBytes) throws Exception {
         stopInternal(true);
         cancelled = false;
+        deleteWhenStopped = false;
+        playbackEstablished = false;
         complete = false;
         failed = false;
         error = "";
@@ -78,7 +93,9 @@ final class PlaybackCache {
         downloadedBytes = 0L;
         startedAtMs = System.currentTimeMillis();
         waitingClients.set(0);
+        metadataRequests.set(0);
         waitingOffset.set(-1L);
+        remoteUrl = base + "/download?path=" + Util.enc(path);
 
         if (!cacheDir.exists() && !cacheDir.mkdirs()) {
             throw new IllegalStateException("Не удалось создать временную папку");
@@ -91,6 +108,7 @@ final class PlaybackCache {
         localServer = new LocalHttpServer();
         localServer.start();
         downloadThread = new Thread(() -> download(base, path), "playback-cache-download");
+        downloadThread.setDaemon(true);
         downloadThread.start();
     }
 
@@ -144,6 +162,10 @@ final class PlaybackCache {
         return waitingOffset.get();
     }
 
+    void markPlaybackEstablished() {
+        playbackEstablished = true;
+    }
+
     void cancelAndDelete() {
         stopInternal(true);
     }
@@ -152,8 +174,13 @@ final class PlaybackCache {
         InputStream in = null;
         FileOutputStream out = null;
         try {
-            HttpURLConnection connection = openRemote(base + "/download?path=" + Util.enc(path));
+            if (cancelled) return;
+            HttpURLConnection connection = openRemote(remoteUrl, null);
             remoteConnection = connection;
+            if (cancelled) {
+                connection.disconnect();
+                return;
+            }
             int code = connection.getResponseCode();
             if (code != 200) throw new IllegalStateException("HTTP " + code);
             App.markPaired(context, connection);
@@ -205,16 +232,23 @@ final class PlaybackCache {
             HttpURLConnection connection = remoteConnection;
             if (connection != null) connection.disconnect();
             remoteConnection = null;
+            if (cancelled && deleteWhenStopped) {
+                //noinspection ResultOfMethodCallIgnored
+                cacheFile.delete();
+            }
         }
     }
 
-    private HttpURLConnection openRemote(String rawUrl) throws Exception {
+    private HttpURLConnection openRemote(String rawUrl, String rangeHeader) throws Exception {
         for (int attempt = 0; attempt < 2; attempt++) {
             HttpURLConnection connection = (HttpURLConnection) new URL(rawUrl).openConnection();
             App.auth(connection, context);
             connection.setConnectTimeout(8000);
             connection.setReadTimeout(30000);
             connection.setRequestProperty("Accept-Encoding", "identity");
+            if (rangeHeader != null && !rangeHeader.isEmpty()) {
+                connection.setRequestProperty("Range", rangeHeader);
+            }
             int code = connection.getResponseCode();
             if (code == 403 && attempt == 0 && App.retryPairingAfterForbidden(context, connection)) {
                 connection.disconnect();
@@ -235,9 +269,10 @@ final class PlaybackCache {
     private void cleanupOldFiles() {
         File[] files = cacheDir.listFiles();
         if (files == null) return;
-        long cutoff = System.currentTimeMillis() - 12L * 60L * 60L * 1000L;
         for (File file : files) {
-            if (file.equals(cacheFile) || file.lastModified() < cutoff) {
+            if (!file.equals(cacheFile)) {
+                // Старые экземпляры используют уникальные имена, поэтому их можно
+                // безопасно удалить без риска повредить новый поток.
                 //noinspection ResultOfMethodCallIgnored
                 file.delete();
             }
@@ -245,21 +280,38 @@ final class PlaybackCache {
     }
 
     private void stopInternal(boolean deleteFile) {
-        cancelled = true;
-        HttpURLConnection connection = remoteConnection;
-        if (connection != null) connection.disconnect();
-        LocalHttpServer server = localServer;
-        if (server != null) server.close();
-        localServer = null;
-        synchronized (dataLock) {
-            dataLock.notifyAll();
-        }
-        Thread thread = downloadThread;
-        if (thread != null) thread.interrupt();
-        downloadThread = null;
-        if (deleteFile && cacheFile.exists()) {
-            //noinspection ResultOfMethodCallIgnored
-            cacheFile.delete();
+        synchronized (stopLock) {
+            cancelled = true;
+            deleteWhenStopped |= deleteFile;
+            synchronized (dataLock) {
+                dataLock.notifyAll();
+            }
+
+            LocalHttpServer server = localServer;
+            localServer = null;
+            if (server != null) server.close();
+
+            HttpURLConnection connection = remoteConnection;
+            if (connection != null) connection.disconnect();
+
+            Thread thread = downloadThread;
+            downloadThread = null;
+            if (thread != null) thread.interrupt();
+
+            // Не блокируем UI ожиданием сетевого потока. У каждого экземпляра свой
+            // файл; загрузчик удалит его в finally, а для уже завершённого потока
+            // оставляем короткую отложенную очистку после закрытия локальных сокетов.
+            if (deleteWhenStopped && cacheFile.exists() && (thread == null || !thread.isAlive())) {
+                Thread cleanup = new Thread(() -> {
+                    try { Thread.sleep(250L); } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                    //noinspection ResultOfMethodCallIgnored
+                    cacheFile.delete();
+                }, "playback-cache-cleanup");
+                cleanup.setDaemon(true);
+                cleanup.start();
+            }
         }
     }
 
@@ -320,7 +372,14 @@ final class PlaybackCache {
     }
 
     private final class LocalHttpServer {
-        private final ExecutorService clients = Executors.newFixedThreadPool(6);
+        private final ThreadPoolExecutor clients = new ThreadPoolExecutor(
+                2, 4, 30L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(8),
+                runnable -> {
+                    Thread thread = new Thread(runnable, "playback-cache-client");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        private final Set<Socket> activeSockets = Collections.synchronizedSet(new HashSet<Socket>());
         private ServerSocket serverSocket;
         private Thread acceptThread;
         private volatile boolean closed;
@@ -329,6 +388,7 @@ final class PlaybackCache {
             serverSocket = new ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"));
             serverSocket.setSoTimeout(1000);
             acceptThread = new Thread(this::acceptLoop, "playback-cache-http");
+            acceptThread.setDaemon(true);
             acceptThread.start();
         }
 
@@ -341,7 +401,13 @@ final class PlaybackCache {
                 try {
                     final Socket socket = serverSocket.accept();
                     socket.setSoTimeout(30000);
-                    clients.execute(() -> handle(socket));
+                    activeSockets.add(socket);
+                    try {
+                        clients.execute(() -> handle(socket));
+                    } catch (RejectedExecutionException rejected) {
+                        activeSockets.remove(socket);
+                        try { socket.close(); } catch (Exception ignoredClose) {}
+                    }
                 } catch (SocketTimeoutException ignored) {
                 } catch (Throwable e) {
                     if (!closed && !cancelled) {
@@ -389,6 +455,19 @@ final class PlaybackCache {
                     return;
                 }
 
+                if (tryReserveMetadataRange(rangeHeader, range, total)
+                        && proxyRemoteRange(socket, method, range, total)) {
+                    return;
+                }
+                if (isUnsupportedInitialRange(rangeHeader, range)) {
+                    failed = true;
+                    error = "Контейнер требует прямое воспроизведение";
+                    synchronized (dataLock) { dataLock.notifyAll(); }
+                    notifyChanged(true);
+                    writeSimple(socket, 503, "Service Unavailable", "");
+                    return;
+                }
+
                 boolean partial = rangeHeader != null;
                 long length = range.end - range.start + 1L;
                 OutputStream out = new BufferedOutputStream(socket.getOutputStream(), 128 * 1024);
@@ -411,7 +490,82 @@ final class PlaybackCache {
                 streamRange(out, range.start, range.end);
             } catch (Throwable ignored) {
             } finally {
+                activeSockets.remove(socket);
                 try { socket.close(); } catch (Exception ignored) {}
+            }
+        }
+
+        private boolean tryReserveMetadataRange(String rangeHeader, Range range, long total) {
+            if (rangeHeader == null || playbackEstablished || complete || failed || cancelled) return false;
+            long downloaded = downloadedBytes;
+            long length = range.end - range.start + 1L;
+            long tailStart = Math.max(0L, total - METADATA_TAIL_WINDOW_BYTES);
+            if (range.start <= downloaded + 4L * 1024L * 1024L
+                    || range.start < tailStart
+                    || length <= 0
+                    || length > MAX_METADATA_RANGE_BYTES) {
+                return false;
+            }
+            while (true) {
+                int current = metadataRequests.get();
+                if (current >= 2) return false;
+                if (metadataRequests.compareAndSet(current, current + 1)) return true;
+            }
+        }
+
+        private boolean isUnsupportedInitialRange(String rangeHeader, Range range) {
+            return rangeHeader != null
+                    && !playbackEstablished
+                    && !complete
+                    && range.start > downloadedBytes + 4L * 1024L * 1024L;
+        }
+
+        /**
+         * Некоторые MP4/MOV при открытии читают небольшой индекс из хвоста файла.
+         * Это не пользовательская перемотка: один короткий Range передаётся напрямую,
+         * а основной файл продолжает последовательно загружаться одним потоком.
+         */
+        private boolean proxyRemoteRange(Socket socket, String method, Range range, long total) {
+            HttpURLConnection connection = null;
+            InputStream in = null;
+            boolean responseStarted = false;
+            try {
+                String header = "bytes=" + range.start + "-" + range.end;
+                connection = openRemote(remoteUrl, header);
+                int code = connection.getResponseCode();
+                if (code != 206) return false;
+                App.markPaired(context, connection);
+
+                long length = range.end - range.start + 1L;
+                OutputStream out = new BufferedOutputStream(socket.getOutputStream(), 128 * 1024);
+                writeAscii(out, "HTTP/1.1 206 Partial Content\r\n");
+                writeAscii(out, "Content-Type: application/octet-stream\r\n");
+                writeAscii(out, "Accept-Ranges: bytes\r\n");
+                writeAscii(out, "Content-Length: " + length + "\r\n");
+                writeAscii(out, "Content-Range: bytes " + range.start + "-" + range.end + "/" + total + "\r\n");
+                writeAscii(out, "Connection: close\r\n\r\n");
+                out.flush();
+                responseStarted = true;
+                if ("HEAD".equals(method)) return true;
+
+                in = new BufferedInputStream(connection.getInputStream(), 128 * 1024);
+                byte[] buffer = new byte[128 * 1024];
+                long remaining = length;
+                while (!cancelled && remaining > 0) {
+                    int read = in.read(buffer, 0, (int) Math.min((long) buffer.length, remaining));
+                    if (read < 0) break;
+                    out.write(buffer, 0, read);
+                    remaining -= read;
+                }
+                out.flush();
+                // После отправки HTTP-заголовков этот сокет уже обработан даже при
+                // преждевременном закрытии libVLC; второй ответ писать нельзя.
+                return true;
+            } catch (Throwable ignored) {
+                return responseStarted;
+            } finally {
+                try { if (in != null) in.close(); } catch (Exception ignored) {}
+                if (connection != null) connection.disconnect();
             }
         }
 
@@ -466,9 +620,9 @@ final class PlaybackCache {
                         continue;
                     }
                     out.write(buffer, 0, read);
-                    out.flush();
                     position += read;
                 }
+                out.flush();
             } finally {
                 file.close();
             }
@@ -477,6 +631,14 @@ final class PlaybackCache {
         void close() {
             closed = true;
             try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) {}
+            List<Socket> sockets;
+            synchronized (activeSockets) {
+                sockets = new ArrayList<>(activeSockets);
+                activeSockets.clear();
+            }
+            for (Socket socket : sockets) {
+                try { socket.close(); } catch (Exception ignored) {}
+            }
             clients.shutdownNow();
             if (acceptThread != null) acceptThread.interrupt();
         }

@@ -91,6 +91,8 @@ public class PlayerActivity extends AppCompatActivity {
     private boolean ignoreGestureSequence = false;
     private boolean viewsDetached = false;
     private boolean destroyed = false;
+    private boolean suppressTerminalEvents = false;
+    private boolean localPlaybackEstablished = false;
     private final Set<String> directOnlyThisSession = new HashSet<>();
 
     private final float[] speeds = {1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f};
@@ -135,9 +137,15 @@ public class PlayerActivity extends AppCompatActivity {
     private final Runnable localStartTimeout = new Runnable() {
         @Override
         public void run() {
-            if (sourceMode == SOURCE_CACHE_LOCAL && !started) {
-                fallbackToDirect("Локальный кэш не запустился");
+            if (sourceMode == SOURCE_CACHE_LOCAL && !localPlaybackEstablished) {
+                fallbackToDirect("Локальный кэш не смог начать воспроизведение");
             }
+        }
+    };
+    private final Runnable clearTerminalSuppression = new Runnable() {
+        @Override
+        public void run() {
+            suppressTerminalEvents = false;
         }
     };
 
@@ -264,13 +272,17 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void handlePlayerEvent(int type, float pct) {
-        if (player == null || sourceMode == SOURCE_CACHE_PREPARING) return;
+        if (destroyed || player == null || sourceMode == SOURCE_CACHE_PREPARING) return;
+        if (suppressTerminalEvents
+                && (type == MediaPlayer.Event.EndReached || type == MediaPlayer.Event.EncounteredError)) {
+            return;
+        }
         switch (type) {
             case MediaPlayer.Event.Playing:
                 reconnectAttempts = 0;
                 reconnecting = false;
                 started = true;
-                ui.removeCallbacks(localStartTimeout);
+                if (sourceMode != SOURCE_CACHE_LOCAL) ui.removeCallbacks(localStartTimeout);
                 if (pendingResumeMs > 0) {
                     long target = pendingResumeMs;
                     pendingResumeMs = 0;
@@ -402,7 +414,7 @@ public class PlayerActivity extends AppCompatActivity {
         ui.removeCallbacks(cacheDecision);
         ui.removeCallbacks(localStartTimeout);
         if (player != null) {
-            player.stop();
+            stopPlayerForTransition();
             updatePlayIcon();
         }
         stopPlaybackCache();
@@ -416,6 +428,7 @@ public class PlayerActivity extends AppCompatActivity {
         lastSavedPosition = resume;
         lastKnownDuration = Store.getDuration(this, p);
         started = false;
+        localPlaybackEstablished = false;
         waitingSeekMs = 0;
         if (!local) updateEpisodeIndex();
         setTitle(nm);
@@ -511,6 +524,7 @@ public class PlayerActivity extends AppCompatActivity {
             return;
         }
         sourceMode = SOURCE_CACHE_LOCAL;
+        localPlaybackEstablished = false;
         showBuffering("Запуск из локального кэша…");
         updateCacheUi();
         startMedia(Uri.parse(playbackCache.localUrl()), cacheRequestedResumeMs, true,
@@ -528,8 +542,16 @@ public class PlayerActivity extends AppCompatActivity {
         if (reason != null && !reason.isEmpty()) {
             Toast.makeText(this, reason + ". Переключение на сервер.", Toast.LENGTH_SHORT).show();
         }
-        player.stop();
+        stopPlayerForTransition();
         startDirectPlayback(resume, "Запуск прямого воспроизведения…");
+    }
+
+    private void stopPlayerForTransition() {
+        if (player == null) return;
+        suppressTerminalEvents = true;
+        ui.removeCallbacks(clearTerminalSuppression);
+        try { player.stop(); } catch (Throwable ignored) {}
+        ui.postDelayed(clearTerminalSuppression, 750L);
     }
 
     private void stopPlaybackCache() {
@@ -1127,6 +1149,13 @@ public class PlayerActivity extends AppCompatActivity {
         // В момент естественного окончания libVLC иногда сначала возвращает 0,
         // а затем присылает EndReached. Не затираем последнюю реальную позицию.
         if (reportedTime > 0 || currentMs <= 0 || !started) currentMs = Math.max(0L, reportedTime);
+        if (sourceMode == SOURCE_CACHE_LOCAL && !localPlaybackEstablished
+                && reportedTime >= 1000L) {
+            localPlaybackEstablished = true;
+            PlaybackCache cache = playbackCache;
+            if (cache != null) cache.markPlaybackEstablished();
+            ui.removeCallbacks(localStartTimeout);
+        }
         time.setText(Util.fmtTime(currentMs) + " / " + Util.fmtTime(duration));
         if (duration > 0 && !dragging) seek.setProgress((int) (currentMs * 1000 / duration));
         if (player.isPlaying()) saveCurrentPosition(false);
@@ -1203,7 +1232,7 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     public void onBackPressed() {
         saveCurrentPosition(true);
-        if (player != null) player.stop();
+        if (player != null) stopPlayerForTransition();
         stopPlaybackCache();
         super.onBackPressed();
         overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
@@ -1212,20 +1241,23 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         destroyed = true;
+        suppressTerminalEvents = true;
         ui.removeCallbacksAndMessages(null);
-        stopPlaybackCache();
         if (session != null) session.release();
         if (audioManager != null) audioManager.abandonAudioFocus(focusListener);
         if (player != null) {
-            player.stop();
+            try { player.stop(); } catch (Throwable ignored) {}
             if (!viewsDetached) {
                 try { player.detachViews(); } catch (Throwable ignored) {}
             }
-            player.release();
+            try { player.release(); } catch (Throwable ignored) {}
             player = null;
         }
+        // Сначала libVLC окончательно закрывает локальный HTTP-поток, только после
+        // этого останавливаем кэш и удаляем его уникальный временный файл.
+        stopPlaybackCache();
         if (libVLC != null) {
-            libVLC.release();
+            try { libVLC.release(); } catch (Throwable ignored) {}
             libVLC = null;
         }
         super.onDestroy();
