@@ -151,9 +151,9 @@ public class DownloadService extends Service {
             byte[] b = md.digest(value.getBytes("UTF-8"));
             char[] out = new char[12];
             for (int i = 0; i < 6; i++) {
-                int value = b[i] & 0xff;
-                out[i * 2] = HEX_DIGITS[value >>> 4];
-                out[i * 2 + 1] = HEX_DIGITS[value & 15];
+                int byteValue = b[i] & 0xff;
+                out[i * 2] = HEX_DIGITS[byteValue >>> 4];
+                out[i * 2 + 1] = HEX_DIGITS[byteValue & 15];
             }
             return new String(out);
         } catch (Exception e) {
