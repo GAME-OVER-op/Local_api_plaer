@@ -1,8 +1,17 @@
 package com.tabletplayer;
 
 import java.net.URLEncoder;
+import java.util.Locale;
 
-public class Util {
+public final class Util {
+    private static final Locale LOCALE = Locale.US;
+    private static final String[] VIDEO_EXTENSIONS = {
+            ".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm", ".ts",
+            ".flv", ".3gp", ".mpg", ".mpeg", ".wmv", ".m2ts"
+    };
+    private static final String[] SIZE_UNITS = {"Б", "КБ", "МБ", "ГБ", "ТБ"};
+
+    private Util() {}
 
     public static int naturalCompare(String left, String right) {
         NameParts a = NameParts.parse(left);
@@ -10,8 +19,6 @@ public class Util {
 
         int base = naturalCompareRaw(a.base, b.base);
         if (base != 0) return base;
-
-        // Оригинал всегда выше копии: "Серия.mp4" перед "Серия (1).mp4".
         if (a.hasVariant != b.hasVariant) return a.hasVariant ? 1 : -1;
         if (a.hasVariant) {
             if (a.numericVariant != b.numericVariant) return a.numericVariant ? -1 : 1;
@@ -24,24 +31,32 @@ public class Util {
     }
 
     private static int naturalCompareRaw(String a, String b) {
-        a = a == null ? "" : a.toLowerCase(java.util.Locale.US);
-        b = b == null ? "" : b.toLowerCase(java.util.Locale.US);
+        if (a == null) a = "";
+        if (b == null) b = "";
         int i = 0, j = 0, la = a.length(), lb = b.length();
         while (i < la && j < lb) {
             char ca = a.charAt(i), cb = b.charAt(j);
             if (Character.isDigit(ca) && Character.isDigit(cb)) {
-                int i0 = i, j0 = j;
+                int aStart = i, bStart = j;
                 while (i < la && Character.isDigit(a.charAt(i))) i++;
                 while (j < lb && Character.isDigit(b.charAt(j))) j++;
-                String na = a.substring(i0, i).replaceFirst("^0+(?!$)", "");
-                String nb = b.substring(j0, j).replaceFirst("^0+(?!$)", "");
-                if (na.length() != nb.length()) return na.length() - nb.length();
-                int c = na.compareTo(nb);
-                if (c != 0) return c;
-                int rawLength = (i - i0) - (j - j0);
+                int aSig = aStart;
+                int bSig = bStart;
+                while (aSig + 1 < i && a.charAt(aSig) == '0') aSig++;
+                while (bSig + 1 < j && b.charAt(bSig) == '0') bSig++;
+                int aLen = i - aSig;
+                int bLen = j - bSig;
+                if (aLen != bLen) return aLen - bLen;
+                for (int k = 0; k < aLen; k++) {
+                    int diff = a.charAt(aSig + k) - b.charAt(bSig + k);
+                    if (diff != 0) return diff;
+                }
+                int rawLength = (i - aStart) - (j - bStart);
                 if (rawLength != 0) return rawLength;
             } else {
-                if (ca != cb) return ca - cb;
+                char lowerA = Character.toLowerCase(ca);
+                char lowerB = Character.toLowerCase(cb);
+                if (lowerA != lowerB) return lowerA - lowerB;
                 i++;
                 j++;
             }
@@ -86,7 +101,10 @@ public class Util {
                     hasVariant = !variant.isEmpty();
                     numeric = hasVariant;
                     for (int i = 0; i < variant.length(); i++) {
-                        if (!Character.isDigit(variant.charAt(i))) { numeric = false; break; }
+                        if (!Character.isDigit(variant.charAt(i))) {
+                            numeric = false;
+                            break;
+                        }
                     }
                 }
             }
@@ -95,23 +113,29 @@ public class Util {
     }
 
     public static boolean isVideo(String name) {
-        String n = name.toLowerCase();
-        String[] ext = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm", ".ts", ".flv", ".3gp", ".mpg", ".mpeg", ".wmv", ".m2ts"};
-        for (String e : ext) if (n.endsWith(e)) return true;
+        if (name == null) return false;
+        String normalized = name.toLowerCase(LOCALE);
+        for (String extension : VIDEO_EXTENSIONS) {
+            if (normalized.endsWith(extension)) return true;
+        }
         return false;
     }
 
     public static String humanSize(long bytes) {
         if (bytes <= 0) return "0 Б";
-        String[] u = {"Б", "КБ", "МБ", "ГБ", "ТБ"};
-        int i = 0;
-        double v = bytes;
-        while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-        if (i == 0) return bytes + " " + u[0];
-        return String.format(java.util.Locale.US, "%.1f %s", v, u[i]);
+        int unit = 0;
+        double value = bytes;
+        while (value >= 1024.0 && unit < SIZE_UNITS.length - 1) {
+            value /= 1024.0;
+            unit++;
+        }
+        if (unit == 0) return bytes + " " + SIZE_UNITS[0];
+        long tenths = Math.round(value * 10.0);
+        return (tenths / 10L) + "." + (tenths % 10L) + " " + SIZE_UNITS[unit];
     }
 
     public static String enc(String s) {
+        if (s == null) return "";
         try {
             return URLEncoder.encode(s, "UTF-8").replace("+", "%20");
         } catch (Exception e) {
@@ -120,7 +144,7 @@ public class Util {
     }
 
     public static boolean isApk(String name) {
-        return name != null && name.toLowerCase().endsWith(".apk");
+        return name != null && name.toLowerCase(LOCALE).endsWith(".apk");
     }
 
     public static String fmtCompactDuration(long ms) {
@@ -129,18 +153,40 @@ public class Util {
         long hours = totalSeconds / 3600L;
         long minutes = (totalSeconds % 3600L) / 60L;
         long seconds = totalSeconds % 60L;
-        if (hours > 0) return String.format(java.util.Locale.US, "%d ч %02d мин", hours, minutes);
-        if (minutes > 0) return String.format(java.util.Locale.US, "%d мин %02d с", minutes, seconds);
-        return seconds + " с";
+        StringBuilder out = new StringBuilder(16);
+        if (hours > 0) {
+            out.append(hours).append(" ч ");
+            appendTwoDigits(out, minutes);
+            return out.append(" мин").toString();
+        }
+        if (minutes > 0) {
+            out.append(minutes).append(" мин ");
+            appendTwoDigits(out, seconds);
+            return out.append(" с").toString();
+        }
+        return out.append(seconds).append(" с").toString();
     }
 
     public static String fmtTime(long ms) {
         if (ms < 0) ms = 0;
-        long total = ms / 1000;
-        long h = total / 3600;
-        long m = (total % 3600) / 60;
-        long s = total % 60;
-        if (h > 0) return String.format(java.util.Locale.US, "%d:%02d:%02d", h, m, s);
-        return String.format(java.util.Locale.US, "%02d:%02d", m, s);
+        long total = ms / 1000L;
+        long hours = total / 3600L;
+        long minutes = (total % 3600L) / 60L;
+        long seconds = total % 60L;
+        StringBuilder out = new StringBuilder(hours > 0 ? 10 : 5);
+        if (hours > 0) {
+            out.append(hours).append(':');
+            appendTwoDigits(out, minutes);
+        } else {
+            appendTwoDigits(out, minutes);
+        }
+        out.append(':');
+        appendTwoDigits(out, seconds);
+        return out.toString();
+    }
+
+    private static void appendTwoDigits(StringBuilder out, long value) {
+        if (value < 10L) out.append('0');
+        out.append(value);
     }
 }

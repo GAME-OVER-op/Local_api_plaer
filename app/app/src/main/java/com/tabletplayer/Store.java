@@ -18,21 +18,23 @@ public class Store {
     static final String KEY_ASPECT = "aspect_mode";
 
     private static final Object LOCK = new Object();
-    private static boolean loaded = false;
+    private static volatile boolean loaded = false;
     private static final Set<String> WATCHED = new HashSet<>();
     private static final Map<String, Long> POSITIONS = new HashMap<>();
     private static final Map<String, Long> DURATIONS = new HashMap<>();
 
     private static void ensureLoaded(Context c) {
+        if (loaded) return;
         synchronized (LOCK) {
             if (loaded) return;
+            android.content.SharedPreferences preferences = App.prefs(c);
             try {
-                JSONArray a = new JSONArray(App.prefs(c).getString(KEY_WATCHED, "[]"));
+                JSONArray a = new JSONArray(preferences.getString(KEY_WATCHED, "[]"));
                 for (int i = 0; i < a.length(); i++) WATCHED.add(a.getString(i));
             } catch (Exception ignored) {
             }
             try {
-                JSONObject o = new JSONObject(App.prefs(c).getString(KEY_POS, "{}"));
+                JSONObject o = new JSONObject(preferences.getString(KEY_POS, "{}"));
                 JSONArray names = o.names();
                 if (names != null) {
                     for (int i = 0; i < names.length(); i++) {
@@ -44,7 +46,7 @@ public class Store {
             } catch (Exception ignored) {
             }
             try {
-                JSONObject o = new JSONObject(App.prefs(c).getString(KEY_DURATION, "{}"));
+                JSONObject o = new JSONObject(preferences.getString(KEY_DURATION, "{}"));
                 JSONArray names = o.names();
                 if (names != null) {
                     for (int i = 0; i < names.length(); i++) {
@@ -101,7 +103,7 @@ public class Store {
         ensureLoaded(c);
         synchronized (LOCK) {
             Long old = POSITIONS.get(p);
-            if (old != null && old == ms) return;
+            if (old != null && old.longValue() == ms) return;
             POSITIONS.put(p, ms);
             persistPositions(c);
         }

@@ -21,6 +21,9 @@ public class App extends Application {
     private static final String KEY_DEVICE_SECRET = "device_secret_v1";
     private static final String KEY_PAIRED_PREFIX = "paired_v1_";
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final char[] HEX_DIGITS = "0123456789abcdef".toCharArray();
+    private static volatile SharedPreferences sharedPreferences;
+    private static volatile String cachedDeviceName;
 
     private static class AuthData {
         String time;
@@ -65,7 +68,17 @@ public class App extends Application {
     }
 
     public static SharedPreferences prefs(Context c) {
-        return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        SharedPreferences current = sharedPreferences;
+        if (current != null) return current;
+        synchronized (App.class) {
+            current = sharedPreferences;
+            if (current == null) {
+                Context app = c.getApplicationContext();
+                current = (app == null ? c : app).getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+                sharedPreferences = current;
+            }
+            return current;
+        }
     }
 
     public static boolean isDark(Context c) {
@@ -91,16 +104,20 @@ public class App extends Application {
     }
 
     public static String deviceName() {
-        String m = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER;
-        String mo = Build.MODEL == null ? "" : Build.MODEL;
-        StringBuilder b = new StringBuilder();
-        String n = (m + " " + mo).trim();
-        for (int i = 0; i < n.length(); i++) {
-            char ch = n.charAt(i);
-            if (ch >= 32 && ch < 127) b.append(ch);
+        String current = cachedDeviceName;
+        if (current != null) return current;
+        String manufacturer = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER;
+        String model = Build.MODEL == null ? "" : Build.MODEL;
+        String source = (manufacturer + " " + model).trim();
+        StringBuilder out = new StringBuilder(source.length());
+        for (int i = 0; i < source.length(); i++) {
+            char ch = source.charAt(i);
+            if (ch >= 32 && ch < 127) out.append(ch);
         }
-        String r = b.toString().trim();
-        return r.isEmpty() ? "Android" : r;
+        current = out.toString().trim();
+        if (current.isEmpty()) current = "Android";
+        cachedDeviceName = current;
+        return current;
     }
 
     /** Добавляет идентификатор и одноразовую HMAC-подпись к обычному HTTP-запросу приложения. */
@@ -213,12 +230,11 @@ public class App extends Application {
     }
 
     private static String hex(byte[] data) {
-        char[] digits = "0123456789abcdef".toCharArray();
         char[] out = new char[data.length * 2];
         for (int i = 0; i < data.length; i++) {
             int v = data[i] & 0xff;
-            out[i * 2] = digits[v >>> 4];
-            out[i * 2 + 1] = digits[v & 15];
+            out[i * 2] = HEX_DIGITS[v >>> 4];
+            out[i * 2 + 1] = HEX_DIGITS[v & 15];
         }
         return new String(out);
     }

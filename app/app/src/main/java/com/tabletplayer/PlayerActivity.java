@@ -176,6 +176,11 @@ public class PlayerActivity extends AppCompatActivity {
     // фактическое состояние асинхронно, из-за чего MediaSession раньше оставалась
     // в STATE_PLAYING после паузы и второе нажатие гарнитуры снова посылало Pause.
     private boolean playbackRequested = false;
+    private int lastSessionState = Integer.MIN_VALUE;
+    private long lastSessionPositionSecond = Long.MIN_VALUE;
+    private int lastSessionSpeedBits = Integer.MIN_VALUE;
+    private long lastDisplayedTimeSecond = Long.MIN_VALUE;
+    private long lastDisplayedDurationSecond = Long.MIN_VALUE;
     private final AudioManager.OnAudioFocusChangeListener focusListener = focus -> {
         if (focus == AudioManager.AUDIOFOCUS_LOSS || focus == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
             if (playbackRequested || (player != null && player.isPlaying())) setPlaying(false);
@@ -613,14 +618,21 @@ public class PlayerActivity extends AppCompatActivity {
             state = PlaybackStateCompat.STATE_PAUSED;
             stateSpeed = 0f;
         }
-        PlaybackStateCompat s = new PlaybackStateCompat.Builder()
+        long positionSecond = pos / 1000L;
+        int speedBits = Float.floatToIntBits(stateSpeed);
+        if (state == lastSessionState && positionSecond == lastSessionPositionSecond
+                && speedBits == lastSessionSpeedBits) return;
+        lastSessionState = state;
+        lastSessionPositionSecond = positionSecond;
+        lastSessionSpeedBits = speedBits;
+        PlaybackStateCompat playbackState = new PlaybackStateCompat.Builder()
                 .setActions(PlaybackStateCompat.ACTION_PLAY | PlaybackStateCompat.ACTION_PAUSE
                         | PlaybackStateCompat.ACTION_PLAY_PAUSE | PlaybackStateCompat.ACTION_SKIP_TO_NEXT
                         | PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS | PlaybackStateCompat.ACTION_SEEK_TO
                         | PlaybackStateCompat.ACTION_STOP)
                 .setState(state, pos, stateSpeed)
                 .build();
-        session.setPlaybackState(s);
+        session.setPlaybackState(playbackState);
     }
 
     private String streamUrl(String p) {
@@ -726,6 +738,11 @@ public class PlayerActivity extends AppCompatActivity {
         }
         pendingResumeMs = resume;
         currentMs = resume;
+        lastDisplayedTimeSecond = Long.MIN_VALUE;
+        lastDisplayedDurationSecond = Long.MIN_VALUE;
+        lastSessionState = Integer.MIN_VALUE;
+        lastSessionPositionSecond = Long.MIN_VALUE;
+        lastSessionSpeedBits = Integer.MIN_VALUE;
         started = false;
         playbackState = STATE_STARTING;
         if (message != null && !message.isEmpty()) showBuffering(message);
@@ -1595,7 +1612,9 @@ public class PlayerActivity extends AppCompatActivity {
             if (activeCache != null) activeCache.markPlaybackEstablished();
             ui.removeCallbacks(localStartTimeout);
         }
-        if (surfaceRecoveryPending && player.isPlaying() && reportedTime > lastVoutProgressMs + 500L) {
+        boolean playingNow;
+        try { playingNow = player.isPlaying(); } catch (Throwable ignored) { playingNow = false; }
+        if (surfaceRecoveryPending && playingNow && reportedTime > lastVoutProgressMs + 500L) {
             long now = System.currentTimeMillis();
             if (currentVoutCount <= 0) {
                 if (zeroVoutSinceMs == 0L) zeroVoutSinceMs = now;
@@ -1612,12 +1631,18 @@ public class PlayerActivity extends AppCompatActivity {
             }
             lastVoutProgressMs = reportedTime;
         }
-        time.setText(Util.fmtTime(currentMs) + " / " + Util.fmtTime(duration));
+        long timeSecond = currentMs / 1000L;
+        long durationSecond = duration / 1000L;
+        if (timeSecond != lastDisplayedTimeSecond || durationSecond != lastDisplayedDurationSecond) {
+            lastDisplayedTimeSecond = timeSecond;
+            lastDisplayedDurationSecond = durationSecond;
+            time.setText(Util.fmtTime(currentMs) + " / " + Util.fmtTime(duration));
+        }
         if (duration > 0 && !dragging) seek.setProgress((int) (currentMs * 1000 / duration));
-        if (player.isPlaying()) saveCurrentPosition(false);
+        if (playingNow) saveCurrentPosition(false);
         if (sourceMode == SOURCE_CACHE_LOCAL && playbackCache != null) {
             updateCacheUi();
-            if (!playbackCache.isWaitingForData() && player.isPlaying()) {
+            if (!playbackCache.isWaitingForData() && playingNow) {
                 waitingSeekMs = 0;
                 hideBuffering();
             }

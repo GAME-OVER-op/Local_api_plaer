@@ -16,6 +16,7 @@ import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.view.animation.LayoutAnimationController;
 
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
@@ -30,6 +31,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -51,11 +54,19 @@ public class BrowseActivity extends AppCompatActivity {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
     private FileAdapter adapter;
+    private final Comparator<Entry> entryComparator = (left, right) -> {
+        if (left.isDir != right.isDir) return left.isDir ? -1 : 1;
+        int result = Util.naturalCompare(left.name, right.name);
+        return ascending ? result : -result;
+    };
 
     private boolean queueMode = false;
     private final List<String> queuePaths = new ArrayList<>();
     private final List<String> queueNames = new ArrayList<>();
     private final List<Long> queueSizes = new ArrayList<>();
+    private final Map<String, Integer> queueOrder = new HashMap<>();
+    private LayoutInflater inflater;
+    private LayoutAnimationController listAnimation;
     private View queueBar;
     private TextView queueInfo;
     private Button queueBtn, queueClear, queuePlay;
@@ -73,6 +84,8 @@ public class BrowseActivity extends AppCompatActivity {
     static class Entry {
         String name;
         boolean isDir;
+        boolean video;
+        boolean apk;
         long size;
         String fullPath;
     }
@@ -81,6 +94,8 @@ public class BrowseActivity extends AppCompatActivity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         setContentView(R.layout.activity_browse);
+        inflater = LayoutInflater.from(this);
+        listAnimation = android.view.animation.AnimationUtils.loadLayoutAnimation(this, R.anim.layout_anim);
         base = getIntent().getStringExtra("base");
         path = getIntent().getStringExtra("path");
         serverName = getIntent().getStringExtra("server_name");
@@ -124,6 +139,7 @@ public class BrowseActivity extends AppCompatActivity {
             queuePaths.clear();
             queueNames.clear();
             queueSizes.clear();
+            queueOrder.clear();
             updateQueueUi();
             adapter.notifyDataSetChanged();
         });
@@ -241,12 +257,14 @@ public class BrowseActivity extends AppCompatActivity {
                 String body = httpGet(base + "/list?path=" + Util.enc(p));
                 JSONObject o = new JSONObject(body);
                 JSONArray arr = o.getJSONArray("entries");
-                final List<Entry> loaded = new ArrayList<>();
+                final List<Entry> loaded = new ArrayList<>(arr.length());
                 for (int i = 0; i < arr.length(); i++) {
                     JSONObject e = arr.getJSONObject(i);
                     Entry en = new Entry();
                     en.name = e.getString("name");
                     en.isDir = e.getBoolean("is_dir");
+                    en.video = !en.isDir && Util.isVideo(en.name);
+                    en.apk = !en.isDir && Util.isApk(en.name);
                     en.size = e.optLong("size", 0);
                     en.fullPath = p.isEmpty() ? en.name : p + "/" + en.name;
                     loaded.add(en);
@@ -274,12 +292,14 @@ public class BrowseActivity extends AppCompatActivity {
                 String body = httpGet(base + "/search?q=" + Util.enc(q) + "&path=" + Util.enc(path));
                 JSONObject o = new JSONObject(body);
                 JSONArray arr = o.getJSONArray("entries");
-                final List<Entry> loaded = new ArrayList<>();
+                final List<Entry> loaded = new ArrayList<>(arr.length());
                 for (int i = 0; i < arr.length(); i++) {
                     JSONObject e = arr.getJSONObject(i);
                     Entry en = new Entry();
                     en.name = e.getString("name");
                     en.isDir = e.getBoolean("is_dir");
+                    en.video = !en.isDir && Util.isVideo(en.name);
+                    en.apk = !en.isDir && Util.isApk(en.name);
                     en.size = e.optLong("size", 0);
                     en.fullPath = e.getString("path");
                     loaded.add(en);
@@ -306,22 +326,17 @@ public class BrowseActivity extends AppCompatActivity {
     }
 
     private void resortAndShow() {
-        Collections.sort(entries, new Comparator<Entry>() {
-            @Override
-            public int compare(Entry a, Entry b) {
-                if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
-                int c = Util.naturalCompare(a.name, b.name);
-                return ascending ? c : -c;
-            }
-        });
+        Collections.sort(entries, entryComparator);
         adapter.notifyDataSetChanged();
         empty.setVisibility(entries.isEmpty() ? View.VISIBLE : View.GONE);
-        listView.setLayoutAnimation(android.view.animation.AnimationUtils.loadLayoutAnimation(this, R.anim.layout_anim));
-        listView.scheduleLayoutAnimation();
+        if (listAnimation != null) {
+            listView.setLayoutAnimation(listAnimation);
+            listView.scheduleLayoutAnimation();
+        }
     }
 
     private void onItemClick(Entry e) {
-        if (queueMode && !e.isDir && Util.isVideo(e.name)) {
+        if (queueMode && e.video) {
             toggleQueue(e);
             return;
         }
@@ -339,9 +354,9 @@ public class BrowseActivity extends AppCompatActivity {
             loadList(e.fullPath);
             return;
         }
-        final boolean video = Util.isVideo(e.name);
-        final boolean apk = Util.isApk(e.name);
-        final List<String> opts = new ArrayList<>();
+        final boolean video = e.video;
+        final boolean apk = e.apk;
+        final List<String> opts = new ArrayList<>(3);
         if (video) opts.add("Смотреть");
         opts.add("Скачать");
         if (apk) opts.add("Скачать и установить");
@@ -368,8 +383,14 @@ public class BrowseActivity extends AppCompatActivity {
             queueNames.add(e.name);
             queueSizes.add(e.size);
         }
+        rebuildQueueOrder();
         updateQueueUi();
         adapter.notifyDataSetChanged();
+    }
+
+    private void rebuildQueueOrder() {
+        queueOrder.clear();
+        for (int i = 0; i < queuePaths.size(); i++) queueOrder.put(queuePaths.get(i), i + 1);
     }
 
     private void updateQueueUi() {
@@ -456,7 +477,10 @@ public class BrowseActivity extends AppCompatActivity {
                 if (code != 200) throw new RuntimeException("HTTP " + code);
                 App.markPaired(this, c);
                 in = c.getInputStream();
-                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                int contentLength = c.getContentLength();
+                int initialCapacity = contentLength > 0 && contentLength <= 4 * 1024 * 1024
+                        ? contentLength : 8192;
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(initialCapacity);
                 byte[] buf = new byte[8192];
                 int r;
                 while ((r = in.read(buf)) != -1) bo.write(buf, 0, r);
@@ -498,62 +522,62 @@ public class BrowseActivity extends AppCompatActivity {
         io.shutdownNow();
     }
 
+    private static final class FileRowHolder {
+        final TextView icon;
+        final TextView name;
+        final TextView sub;
+        final TextView check;
+        final TextView queue;
+
+        FileRowHolder(View root) {
+            icon = root.findViewById(R.id.item_icon);
+            name = root.findViewById(R.id.item_name);
+            sub = root.findViewById(R.id.item_sub);
+            check = root.findViewById(R.id.item_check);
+            queue = root.findViewById(R.id.item_queue);
+        }
+    }
+
     class FileAdapter extends BaseAdapter {
-        @Override
-        public int getCount() {
-            return entries.size();
-        }
-
-        @Override
-        public Object getItem(int i) {
-            return entries.get(i);
-        }
-
-        @Override
-        public long getItemId(int i) {
-            return i;
-        }
+        @Override public int getCount() { return entries.size(); }
+        @Override public Entry getItem(int i) { return entries.get(i); }
+        @Override public long getItemId(int i) { return i; }
 
         @Override
         public View getView(int pos, View convert, ViewGroup parent) {
+            FileRowHolder holder;
             if (convert == null) {
-                convert = LayoutInflater.from(BrowseActivity.this).inflate(R.layout.list_item, parent, false);
-            }
-            Entry e = entries.get(pos);
-            TextView icon = convert.findViewById(R.id.item_icon);
-            TextView name = convert.findViewById(R.id.item_name);
-            TextView sub = convert.findViewById(R.id.item_sub);
-            TextView check = convert.findViewById(R.id.item_check);
-            boolean video = Util.isVideo(e.name);
-            boolean apk = Util.isApk(e.name);
-            icon.setText(e.isDir ? "📁" : (video ? "🎬" : (apk ? "📦" : "📄")));
-            name.setText(e.name);
-            if (e.isDir) {
-                sub.setText("папка");
+                convert = inflater.inflate(R.layout.list_item, parent, false);
+                holder = new FileRowHolder(convert);
+                convert.setTag(holder);
             } else {
-                StringBuilder sb = new StringBuilder(Util.humanSize(e.size));
-                if (video && !Store.isWatched(BrowseActivity.this, e.fullPath)) {
-                    long p = Store.getPos(BrowseActivity.this, e.fullPath);
-                    if (p > 5000) sb.append("  ·  ⏱ ").append(Util.fmtTime(p));
-                }
-                if (DownloadService.isDownloaded(base, e.fullPath, e.name)) sb.append("  ·  ⬇");
-                sub.setText(sb.toString());
+                holder = (FileRowHolder) convert.getTag();
             }
-            boolean watched = !e.isDir && video && Store.isWatched(BrowseActivity.this, e.fullPath);
-            check.setVisibility(watched ? View.VISIBLE : View.GONE);
-            TextView queueNum = convert.findViewById(R.id.item_queue);
-            if (queueMode && !e.isDir && video) {
-                int qi = queuePaths.indexOf(e.fullPath);
-                if (qi >= 0) {
-                    queueNum.setText(String.valueOf(qi + 1));
-                    queueNum.setVisibility(View.VISIBLE);
-                } else {
-                    queueNum.setVisibility(View.GONE);
-                }
+            Entry entry = entries.get(pos);
+            holder.icon.setText(entry.isDir ? "📁" : (entry.video ? "🎬" : (entry.apk ? "📦" : "📄")));
+            holder.name.setText(entry.name);
+            boolean watched = entry.video && Store.isWatched(BrowseActivity.this, entry.fullPath);
+            if (entry.isDir) {
+                holder.sub.setText("папка");
             } else {
-                queueNum.setVisibility(View.GONE);
+                StringBuilder description = new StringBuilder(48).append(Util.humanSize(entry.size));
+                if (entry.video && !watched) {
+                    long position = Store.getPos(BrowseActivity.this, entry.fullPath);
+                    if (position > 5000L) description.append("  ·  ⏱ ").append(Util.fmtTime(position));
+                }
+                if (DownloadService.isDownloaded(base, entry.fullPath, entry.name)) description.append("  ·  ⬇");
+                holder.sub.setText(description);
+            }
+            holder.check.setVisibility(watched ? View.VISIBLE : View.GONE);
+            Integer order = queueMode && entry.video ? queueOrder.get(entry.fullPath) : null;
+            if (order != null) {
+                holder.queue.setText(String.valueOf(order));
+                holder.queue.setVisibility(View.VISIBLE);
+            } else {
+                holder.queue.setVisibility(View.GONE);
             }
             return convert;
         }
     }
+
 }

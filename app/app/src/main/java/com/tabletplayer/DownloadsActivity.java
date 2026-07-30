@@ -30,11 +30,15 @@ public class DownloadsActivity extends AppCompatActivity {
     private ListView list;
     private TextView empty;
     private Adapter adapter;
+    private LayoutInflater inflater;
+    private static final Comparator<File> FILE_NAME_COMPARATOR =
+            (left, right) -> Util.naturalCompare(left.getName(), right.getName());
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         setContentView(R.layout.activity_downloads);
+        inflater = LayoutInflater.from(this);
         setTitle("Загрузки");
         list = findViewById(R.id.dl_list);
         empty = findViewById(R.id.dl_empty);
@@ -61,12 +65,7 @@ public class DownloadsActivity extends AppCompatActivity {
         } catch (Exception ignored) {
         }
         if (!files.isEmpty()) {
-            Collections.sort(files, new Comparator<File>() {
-                @Override
-                public int compare(File a, File b) {
-                    return Util.naturalCompare(a.getName(), b.getName());
-                }
-            });
+            Collections.sort(files, FILE_NAME_COMPARATOR);
         }
         adapter.notifyDataSetChanged();
         empty.setVisibility(files.isEmpty() ? View.VISIBLE : View.GONE);
@@ -162,42 +161,50 @@ public class DownloadsActivity extends AppCompatActivity {
         return "*/*";
     }
 
+    private static final class DownloadRowHolder {
+        final TextView icon;
+        final TextView name;
+        final TextView sub;
+        final View check;
+        final View queue;
+
+        DownloadRowHolder(View root) {
+            icon = root.findViewById(R.id.item_icon);
+            name = root.findViewById(R.id.item_name);
+            sub = root.findViewById(R.id.item_sub);
+            check = root.findViewById(R.id.item_check);
+            queue = root.findViewById(R.id.item_queue);
+        }
+    }
+
     class Adapter extends BaseAdapter {
-        @Override
-        public int getCount() {
-            return files.size();
-        }
-
-        @Override
-        public Object getItem(int i) {
-            return files.get(i);
-        }
-
-        @Override
-        public long getItemId(int i) {
-            return i;
-        }
+        @Override public int getCount() { return files.size(); }
+        @Override public File getItem(int i) { return files.get(i); }
+        @Override public long getItemId(int i) { return i; }
 
         @Override
         public View getView(int pos, View convert, ViewGroup parent) {
+            DownloadRowHolder holder;
             if (convert == null) {
-                convert = LayoutInflater.from(DownloadsActivity.this).inflate(R.layout.list_item, parent, false);
+                convert = inflater.inflate(R.layout.list_item, parent, false);
+                holder = new DownloadRowHolder(convert);
+                convert.setTag(holder);
+            } else {
+                holder = (DownloadRowHolder) convert.getTag();
             }
-            File f = files.get(pos);
-            String nm = f.getName();
-            TextView icon = convert.findViewById(R.id.item_icon);
-            TextView name = convert.findViewById(R.id.item_name);
-            TextView sub = convert.findViewById(R.id.item_sub);
-            convert.findViewById(R.id.item_check).setVisibility(View.GONE);
-            convert.findViewById(R.id.item_queue).setVisibility(View.GONE);
-            icon.setText(Util.isVideo(nm) ? "🎬" : (Util.isApk(nm) ? "📦" : "📄"));
-            name.setText(nm);
-            String rel = DownloadService.relativeDisplayPath(f);
-            int slash = rel.lastIndexOf(File.separatorChar);
-            String where = slash > 0 ? rel.substring(0, slash) : "";
-            sub.setText(where.isEmpty() ? Util.humanSize(f.length())
-                    : Util.humanSize(f.length()) + "  ·  " + where);
+            File file = files.get(pos);
+            String fileName = file.getName();
+            holder.check.setVisibility(View.GONE);
+            holder.queue.setVisibility(View.GONE);
+            holder.icon.setText(Util.isVideo(fileName) ? "🎬" : (Util.isApk(fileName) ? "📦" : "📄"));
+            holder.name.setText(fileName);
+            String relative = DownloadService.relativeDisplayPath(file);
+            int slash = relative.lastIndexOf(File.separatorChar);
+            String folder = slash > 0 ? relative.substring(0, slash) : "";
+            String size = Util.humanSize(file.length());
+            holder.sub.setText(folder.isEmpty() ? size : size + "  ·  " + folder);
             return convert;
         }
     }
+
 }

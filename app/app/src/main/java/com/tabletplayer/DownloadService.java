@@ -37,6 +37,7 @@ public class DownloadService extends Service {
     public static final String ACTION_START = "com.tabletplayer.DL_START";
     public static final String ACTION_CANCEL = "com.tabletplayer.DL_CANCEL";
     private static final String CH = "downloads";
+    private static final char[] HEX_DIGITS = "0123456789abcdef".toCharArray();
 
     static final ConcurrentHashMap<Integer, Boolean> CANCELLED = new ConcurrentHashMap<>();
     private static final AtomicInteger SEQ = new AtomicInteger(2000);
@@ -88,7 +89,7 @@ public class DownloadService extends Service {
     }
 
     private static List<String> splitRemotePath(String path) {
-        List<String> out = new ArrayList<>();
+        List<String> out = new ArrayList<>(8);
         if (path == null) return out;
         String[] raw = path.replace('\\', '/').split("/");
         for (String part : raw) {
@@ -112,7 +113,7 @@ public class DownloadService extends Service {
     private static String safeSegment(String value) {
         if (value == null) value = "";
         String original = value;
-        StringBuilder out = new StringBuilder();
+        StringBuilder out = new StringBuilder(value.length());
         boolean changed = false;
         for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);
@@ -148,9 +149,13 @@ public class DownloadService extends Service {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] b = md.digest(value.getBytes("UTF-8"));
-            StringBuilder s = new StringBuilder();
-            for (int i = 0; i < 6; i++) s.append(String.format(java.util.Locale.US, "%02x", b[i] & 0xff));
-            return s.toString();
+            char[] out = new char[12];
+            for (int i = 0; i < 6; i++) {
+                int value = b[i] & 0xff;
+                out[i * 2] = HEX_DIGITS[value >>> 4];
+                out[i * 2 + 1] = HEX_DIGITS[value & 15];
+            }
+            return new String(out);
         } catch (Exception e) {
             return Integer.toHexString(value.hashCode());
         }

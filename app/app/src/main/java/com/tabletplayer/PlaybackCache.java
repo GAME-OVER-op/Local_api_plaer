@@ -54,6 +54,7 @@ final class PlaybackCache {
     private static final int DOWNLOAD_BUFFER_SIZE = 256 * 1024;
     private static final int STREAM_BUFFER_SIZE = 256 * 1024;
     private static final int SOCKET_SEND_BUFFER_SIZE = 512 * 1024;
+    private static final long FILE_TOUCH_INTERVAL_MS = 5000L;
 
     private final Context context;
     private final Listener listener;
@@ -75,6 +76,7 @@ final class PlaybackCache {
     private volatile long downloadedBytes;
     private volatile long startedAtMs;
     private volatile long lastNotifyMs;
+    private long lastFileTouchMs;
     private volatile long speedSampleAtMs;
     private volatile long speedSampleBytes;
     private volatile long bytesPerSecond;
@@ -114,6 +116,7 @@ final class PlaybackCache {
         throttleWindowBytes = 0L;
         startedAtMs = System.currentTimeMillis();
         lastNotifyMs = 0L;
+        lastFileTouchMs = 0L;
         speedSampleAtMs = startedAtMs;
         speedSampleBytes = 0L;
         bytesPerSecond = 0L;
@@ -300,7 +303,7 @@ final class PlaybackCache {
             while (!cancelled && (read = in.read(buffer)) != -1) {
                 out.write(buffer, 0, read);
                 downloadedBytes += read;
-                cacheFile.setLastModified(System.currentTimeMillis());
+                touchCacheFile(false);
                 updateSpeed();
                 synchronized (dataLock) { dataLock.notifyAll(); }
                 notifyChanged(false);
@@ -310,6 +313,7 @@ final class PlaybackCache {
             if (!cancelled) {
                 if (downloadedBytes != totalBytes) throw new IllegalStateException("Файл загружен не полностью");
                 complete = true;
+                touchCacheFile(true);
                 PlaybackDiagnostics.log(context, "cache complete bytes=" + downloadedBytes);
                 synchronized (dataLock) { dataLock.notifyAll(); }
                 notifyChanged(true);
@@ -336,6 +340,14 @@ final class PlaybackCache {
         }
     }
 
+
+    private void touchCacheFile(boolean force) {
+        long now = System.currentTimeMillis();
+        if (!force && now - lastFileTouchMs < FILE_TOUCH_INTERVAL_MS) return;
+        lastFileTouchMs = now;
+        //noinspection ResultOfMethodCallIgnored
+        cacheFile.setLastModified(now);
+    }
 
     /**
      * Когда данных уже много, не даём фоновой записи забрать весь CPU/I/O у
@@ -475,6 +487,10 @@ final class PlaybackCache {
         private Thread acceptThread;
         private volatile boolean closed;
 
+        LocalHttpServer() {
+            workers.allowCoreThreadTimeOut(true);
+        }
+
         void start() throws Exception {
             serverSocket = new ServerSocket(0, 6, InetAddress.getByName("127.0.0.1"));
             serverSocket.setSoTimeout(1000);
@@ -533,8 +549,9 @@ final class PlaybackCache {
                 BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), "ISO-8859-1"));
                 String requestLine = reader.readLine();
                 if (requestLine == null) return;
-                String[] parts = requestLine.split(" ");
-                String method = parts.length > 0 ? parts[0].toUpperCase(Locale.US) : "";
+                int firstSpace = requestLine.indexOf(' ');
+                String method = (firstSpace > 0 ? requestLine.substring(0, firstSpace) : requestLine)
+                        .toUpperCase(Locale.US);
                 String rangeHeader = null;
                 String line;
                 while ((line = reader.readLine()) != null && !line.isEmpty()) {
