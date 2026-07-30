@@ -1,6 +1,5 @@
 package com.tabletplayer;
 
-import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -23,6 +22,9 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -53,6 +55,105 @@ public class DownloadService extends Service {
         File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "TabletPlayer");
         if (!dir.exists()) dir.mkdirs();
         return dir;
+    }
+
+    /**
+     * Уникальный путь загрузки строится из адреса сервера и полного удалённого пути.
+     * Поэтому одинаковые имена из разных папок или серверов больше не смешиваются.
+     */
+    public static File targetFile(String base, String remotePath, String fallbackName) {
+        File root = downloadsDir();
+        File current = new File(root, serverFolder(base));
+        List<String> parts = splitRemotePath(remotePath);
+        if (parts.isEmpty()) parts.add(fallbackName == null ? "download" : fallbackName);
+        for (int i = 0; i < parts.size() - 1; i++) current = new File(current, safeSegment(parts.get(i)));
+        String last = safeSegment(parts.get(parts.size() - 1));
+        if (last.isEmpty()) last = safeSegment(fallbackName == null ? "download" : fallbackName);
+        return new File(current, last);
+    }
+
+    public static boolean isDownloaded(String base, String remotePath, String name) {
+        File f = targetFile(base, remotePath, name);
+        return f.isFile() && f.length() > 0;
+    }
+
+    public static String relativeDisplayPath(File file) {
+        try {
+            String root = downloadsDir().getCanonicalPath();
+            String full = file.getCanonicalPath();
+            if (full.startsWith(root + File.separator)) return full.substring(root.length() + 1);
+        } catch (Exception ignored) {
+        }
+        return file.getName();
+    }
+
+    private static List<String> splitRemotePath(String path) {
+        List<String> out = new ArrayList<>();
+        if (path == null) return out;
+        String[] raw = path.replace('\\', '/').split("/");
+        for (String part : raw) {
+            if (part.isEmpty() || ".".equals(part) || "..".equals(part)) continue;
+            out.add(part);
+        }
+        return out;
+    }
+
+    private static String serverFolder(String base) {
+        String label = "server";
+        try {
+            URL u = new URL(base);
+            int port = u.getPort() >= 0 ? u.getPort() : u.getDefaultPort();
+            label = u.getHost() + "_" + port;
+        } catch (Exception ignored) {
+        }
+        return safeSegment(label) + "_" + shortHash(base == null ? "" : base);
+    }
+
+    private static String safeSegment(String value) {
+        if (value == null) value = "";
+        String original = value;
+        StringBuilder out = new StringBuilder();
+        boolean changed = false;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch < 32 || "\\/:*?\"<>|".indexOf(ch) >= 0) {
+                out.append('_');
+                changed = true;
+            } else {
+                out.append(ch);
+            }
+        }
+        String s = out.toString().trim();
+        if (s.isEmpty() || ".".equals(s) || "..".equals(s)) {
+            s = "file";
+            changed = true;
+        }
+        if (s.length() > 120) {
+            s = s.substring(0, 100);
+            changed = true;
+        }
+        if (changed) s = addHashBeforeExtension(s, shortHash(original));
+        return s;
+    }
+
+    private static String addHashBeforeExtension(String name, String hash) {
+        int dot = name.lastIndexOf('.');
+        if (dot > 0 && dot < name.length() - 1) {
+            return name.substring(0, dot) + "~" + hash + name.substring(dot);
+        }
+        return name + "~" + hash;
+    }
+
+    private static String shortHash(String value) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] b = md.digest(value.getBytes("UTF-8"));
+            StringBuilder s = new StringBuilder();
+            for (int i = 0; i < 6; i++) s.append(String.format(java.util.Locale.US, "%02x", b[i] & 0xff));
+            return s.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(value.hashCode());
+        }
     }
 
     @Override
@@ -91,12 +192,7 @@ public class DownloadService extends Service {
             } else {
                 NotificationManagerCompat.from(this).notify(id, nb.build());
             }
-            io.execute(new Runnable() {
-                @Override
-                public void run() {
-                    download(id, base, path, name, install);
-                }
-            });
+            io.execute(() -> download(id, base, path, name, install));
         }
         return START_NOT_STICKY;
     }
@@ -119,88 +215,154 @@ public class DownloadService extends Service {
         NotificationManagerCompat nm = NotificationManagerCompat.from(this);
         NotificationCompat.Builder nb = builder(id, name);
         boolean cancelled = false;
-        File out = null;
+        File out = targetFile(base, path, name);
+        File part = new File(out.getAbsolutePath() + ".part");
+        long done = 0;
+        long total = -1;
+
         try {
-            File dir = downloadsDir();
-            out = new File(dir, name);
-            long existing = out.exists() ? out.length() : 0;
+            if (base == null || path == null || name == null) throw new IllegalArgumentException("нет данных загрузки");
+            File parent = out.getParentFile();
+            if (parent == null || (!parent.exists() && !parent.mkdirs())) throw new RuntimeException("не удалось создать папку");
 
-            HttpURLConnection c = (HttpURLConnection) new URL(base + "/download?path=" + Util.enc(path)).openConnection();
-            App.auth(c, this);
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(40000);
-            if (existing > 0) c.setRequestProperty("Range", "bytes=" + existing + "-");
-            int code = c.getResponseCode();
+            for (int attempt = 0; attempt < 2; attempt++) {
+                long existing = part.exists() ? part.length() : 0;
+                HttpURLConnection c = null;
+                InputStream in = null;
+                FileOutputStream fos = null;
+                try {
+                    c = openDownloadConnection(base, path, existing);
+                    int code = c.getResponseCode();
 
-            boolean append;
-            long total;
-            if (code == 206) {
-                append = true;
-                total = existing + contentLen(c);
-            } else if (code == 200) {
-                append = false;
-                existing = 0;
-                total = contentLen(c);
-            } else {
-                throw new RuntimeException("HTTP " + code);
-            }
-
-            InputStream in = c.getInputStream();
-            FileOutputStream fos = new FileOutputStream(out, append);
-            byte[] buf = new byte[65536];
-            long done = existing;
-            int r;
-            int lastPct = -1;
-            long lastNotif = 0;
-            while ((r = in.read(buf)) != -1) {
-                if (Boolean.TRUE.equals(CANCELLED.remove(id))) {
-                    cancelled = true;
-                    break;
-                }
-                fos.write(buf, 0, r);
-                done += r;
-                long now = System.currentTimeMillis();
-                if (total > 0) {
-                    int pct = (int) (done * 100 / total);
-                    if (pct != lastPct && now - lastNotif > 300) {
-                        lastPct = pct;
-                        lastNotif = now;
-                        nb.setProgress(100, pct, false).setContentText(pct + "%  ·  " + Util.humanSize(done));
-                        nm.notify(id, nb.build());
+                    if (code == 416 && existing > 0 && attempt == 0) {
+                        part.delete();
+                        continue;
                     }
-                } else if (now - lastNotif > 500) {
-                    lastNotif = now;
-                    nb.setProgress(0, 0, true).setContentText(Util.humanSize(done));
-                    nm.notify(id, nb.build());
+                    if (code != 200 && code != 206) throw new RuntimeException("HTTP " + code);
+                    if (code == 206 && !validContentRange(c, existing)) {
+                        if (attempt == 0) {
+                            part.delete();
+                            continue;
+                        }
+                        throw new RuntimeException("неверный диапазон ответа");
+                    }
+                    App.markPaired(this, c);
+
+                    boolean append = code == 206;
+                    if (!append) existing = 0;
+                    total = totalLength(c, existing, append);
+                    in = c.getInputStream();
+                    fos = new FileOutputStream(part, append);
+                    byte[] buf = new byte[65536];
+                    done = existing;
+                    int r;
+                    int lastPct = -1;
+                    long lastNotif = 0;
+                    while ((r = in.read(buf)) != -1) {
+                        if (Boolean.TRUE.equals(CANCELLED.remove(id))) {
+                            cancelled = true;
+                            break;
+                        }
+                        fos.write(buf, 0, r);
+                        done += r;
+                        long now = System.currentTimeMillis();
+                        if (total > 0) {
+                            int pct = (int) Math.min(100, done * 100 / total);
+                            if (pct != lastPct && now - lastNotif > 300) {
+                                lastPct = pct;
+                                lastNotif = now;
+                                nb.setProgress(100, pct, false).setContentText(pct + "%  ·  " + Util.humanSize(done));
+                                nm.notify(id, nb.build());
+                            }
+                        } else if (now - lastNotif > 500) {
+                            lastNotif = now;
+                            nb.setProgress(0, 0, true).setContentText(Util.humanSize(done));
+                            nm.notify(id, nb.build());
+                        }
+                    }
+                    fos.flush();
+                } finally {
+                    try { if (fos != null) fos.close(); } catch (Exception ignored) {}
+                    try { if (in != null) in.close(); } catch (Exception ignored) {}
+                    if (c != null) c.disconnect();
                 }
+                break;
             }
-            fos.flush();
-            fos.close();
-            in.close();
-            c.disconnect();
+
+            if (!cancelled) {
+                if (total > 0 && done != total) throw new RuntimeException("неверный размер загруженного файла");
+                if (out.exists() && !out.delete()) throw new RuntimeException("не удалось заменить старый файл");
+                if (!part.renameTo(out)) throw new RuntimeException("не удалось завершить файл");
+            }
         } catch (Exception ex) {
             nb.setOngoing(false).setProgress(0, 0, false).setContentText("Ошибка: " + ex.getMessage()).setAutoCancel(true);
             nm.notify(id, nb.build());
+            CANCELLED.remove(id);
             finishOne();
             return;
         }
 
         if (cancelled) {
             nm.cancel(id);
-            if (out != null) out.delete();
+            part.delete();
+            cleanupEmptyParents(part.getParentFile());
             toast("Загрузка отменена");
         } else {
-            NotificationCompat.Builder done = new NotificationCompat.Builder(this, CH)
+            NotificationCompat.Builder doneNotification = new NotificationCompat.Builder(this, CH)
                     .setSmallIcon(android.R.drawable.stat_sys_download_done)
                     .setContentTitle(name)
                     .setContentText("Готово")
                     .setAutoCancel(true)
                     .setPriority(NotificationCompat.PRIORITY_LOW);
-            nm.notify(id, done.build());
+            nm.notify(id, doneNotification.build());
             toast("Скачано: " + name);
-            if (install && out != null) installApk(out);
+            if (install) installApk(out);
         }
+        CANCELLED.remove(id);
         finishOne();
+    }
+
+    private HttpURLConnection openDownloadConnection(String base, String path, long existing) throws Exception {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            HttpURLConnection c = (HttpURLConnection) new URL(base + "/download?path=" + Util.enc(path)).openConnection();
+            App.auth(c, this);
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(40000);
+            if (existing > 0) c.setRequestProperty("Range", "bytes=" + existing + "-");
+            int code = c.getResponseCode();
+            if (code == 403 && attempt == 0 && App.retryPairingAfterForbidden(this, c)) {
+                c.disconnect();
+                continue;
+            }
+            return c;
+        }
+        throw new RuntimeException("HTTP 403");
+    }
+
+    private boolean validContentRange(HttpURLConnection c, long expectedStart) {
+        String range = c.getHeaderField("Content-Range");
+        if (range == null || !range.startsWith("bytes ")) return false;
+        int dash = range.indexOf('-', 6);
+        if (dash < 0) return false;
+        try {
+            return Long.parseLong(range.substring(6, dash).trim()) == expectedStart;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private long totalLength(HttpURLConnection c, long existing, boolean partial) {
+        if (partial) {
+            String range = c.getHeaderField("Content-Range");
+            if (range != null) {
+                int slash = range.lastIndexOf('/');
+                if (slash >= 0) {
+                    try { return Long.parseLong(range.substring(slash + 1).trim()); } catch (Exception ignored) {}
+                }
+            }
+        }
+        long len = contentLen(c);
+        return partial && len > 0 ? existing + len : len;
     }
 
     private long contentLen(HttpURLConnection c) {
@@ -210,10 +372,7 @@ public class DownloadService extends Service {
         }
         String h = c.getHeaderField("Content-Length");
         if (h != null) {
-            try {
-                return Long.parseLong(h.trim());
-            } catch (Exception ignored) {
-            }
+            try { return Long.parseLong(h.trim()); } catch (Exception ignored) {}
         }
         return -1;
     }
@@ -233,6 +392,15 @@ public class DownloadService extends Service {
         }
     }
 
+    public static void cleanupEmptyParents(File dir) {
+        File root = downloadsDir();
+        while (dir != null && !dir.equals(root)) {
+            String[] children = dir.list();
+            if (children == null || children.length != 0 || !dir.delete()) break;
+            dir = dir.getParentFile();
+        }
+    }
+
     private void finishOne() {
         if (active.decrementAndGet() <= 0) {
             if (Build.VERSION.SDK_INT >= 24) stopFgDetach();
@@ -247,12 +415,7 @@ public class DownloadService extends Service {
     }
 
     private void toast(final String s) {
-        ui.post(new Runnable() {
-            @Override
-            public void run() {
-                Toast.makeText(getApplicationContext(), s, Toast.LENGTH_SHORT).show();
-            }
-        });
+        ui.post(() -> Toast.makeText(getApplicationContext(), s, Toast.LENGTH_SHORT).show());
     }
 
     @Override

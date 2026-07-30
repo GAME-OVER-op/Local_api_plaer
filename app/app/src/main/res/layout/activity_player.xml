@@ -44,9 +44,20 @@
         android:padding="22dp">
 
         <ProgressBar
+            android:id="@+id/buffer_spinner"
             android:layout_width="48dp"
             android:layout_height="48dp"
             style="?android:attr/progressBarStyleLarge" />
+
+        <ProgressBar
+            android:id="@+id/buffer_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:max="1000"
+            android:progress="0"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/buffering_text"
@@ -66,6 +77,25 @@
             android:text="Повторить"
             android:visibility="gone" />
     </LinearLayout>
+
+
+    <TextView
+        android:id="@+id/cache_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|right"
+        android:layout_marginTop="14dp"
+        android:layout_marginRight="14dp"
+        android:alpha="0.72"
+        android:background="@drawable/overlay_bg"
+        android:paddingLeft="10dp"
+        android:paddingRight="10dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp"
+        android:text="↓ 30%"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp"
+        android:visibility="gone" />
 
     <TextView
         android:id="@+id/gesture_info"

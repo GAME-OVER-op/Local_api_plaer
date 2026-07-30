@@ -29,9 +29,7 @@ import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -53,7 +51,6 @@ public class BrowseActivity extends AppCompatActivity {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
     private FileAdapter adapter;
-    private final Set<String> downloaded = new HashSet<>();
 
     private boolean queueMode = false;
     private final List<String> queuePaths = new ArrayList<>();
@@ -96,6 +93,7 @@ public class BrowseActivity extends AppCompatActivity {
         crumbs = findViewById(R.id.crumbs);
         swipe = findViewById(R.id.swipe);
         Button searchBtn = findViewById(R.id.search_btn);
+        Button serversBtn = findViewById(R.id.servers_btn);
         ImageButton downloadsBtn = findViewById(R.id.downloads_btn);
         queueBar = findViewById(R.id.queue_bar);
         queueInfo = findViewById(R.id.queue_info);
@@ -105,6 +103,11 @@ public class BrowseActivity extends AppCompatActivity {
         undoBar = findViewById(R.id.undo_bar);
         undoText = findViewById(R.id.undo_text);
         undoCancel = findViewById(R.id.undo_cancel);
+
+        serversBtn.setOnClickListener(v -> {
+            finish();
+            overridePendingTransition(R.anim.slide_in_left, R.anim.slide_out_right);
+        });
 
         downloadsBtn.setOnClickListener(v -> {
             startActivity(new Intent(this, DownloadsActivity.class));
@@ -155,7 +158,6 @@ public class BrowseActivity extends AppCompatActivity {
             return true;
         });
 
-        refreshDownloaded();
         loadList(path);
     }
 
@@ -431,30 +433,31 @@ public class BrowseActivity extends AppCompatActivity {
         ui.postDelayed(hideUndo, 5000);
     }
 
-    private void refreshDownloaded() {
-        downloaded.clear();
-        String[] names = DownloadService.downloadsDir().list();
-        if (names != null) Collections.addAll(downloaded, names);
-    }
-
     private String httpGet(String u) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
-        App.auth(c, this);
-        c.setConnectTimeout(8000);
-        c.setReadTimeout(40000);
-        int code = c.getResponseCode();
-        if (code != 200) {
-            c.disconnect();
-            throw new RuntimeException("HTTP " + code);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            HttpURLConnection c = null;
+            java.io.InputStream in = null;
+            try {
+                c = (HttpURLConnection) new URL(u).openConnection();
+                App.auth(c, this);
+                c.setConnectTimeout(8000);
+                c.setReadTimeout(40000);
+                int code = c.getResponseCode();
+                if (code == 403 && attempt == 0 && App.retryPairingAfterForbidden(this, c)) continue;
+                if (code != 200) throw new RuntimeException("HTTP " + code);
+                App.markPaired(this, c);
+                in = c.getInputStream();
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int r;
+                while ((r = in.read(buf)) != -1) bo.write(buf, 0, r);
+                return bo.toString("UTF-8");
+            } finally {
+                try { if (in != null) in.close(); } catch (Exception ignored) {}
+                if (c != null) c.disconnect();
+            }
         }
-        java.io.InputStream in = c.getInputStream();
-        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int r;
-        while ((r = in.read(buf)) != -1) bo.write(buf, 0, r);
-        in.close();
-        c.disconnect();
-        return bo.toString("UTF-8");
+        throw new RuntimeException("HTTP 403");
     }
 
     @Override
@@ -477,7 +480,6 @@ public class BrowseActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        refreshDownloaded();
         if (adapter != null) adapter.notifyDataSetChanged();
     }
 
@@ -525,7 +527,7 @@ public class BrowseActivity extends AppCompatActivity {
                     long p = Store.getPos(BrowseActivity.this, e.fullPath);
                     if (p > 5000) sb.append("  ·  ⏱ ").append(Util.fmtTime(p));
                 }
-                if (downloaded.contains(e.name)) sb.append("  ·  ⬇");
+                if (DownloadService.isDownloaded(base, e.fullPath, e.name)) sb.append("  ·  ⬇");
                 sub.setText(sb.toString());
             }
             boolean watched = !e.isDir && video && Store.isWatched(BrowseActivity.this, e.fullPath);

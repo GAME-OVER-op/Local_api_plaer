@@ -18,10 +18,14 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /** Экран скачанных на устройство файлов: просмотр / установка / удаление. */
 public class DownloadsActivity extends AppCompatActivity {
+    private static final int MAX_FILES = 10000;
+    private static final int MAX_DEPTH = 32;
     private final List<File> files = new ArrayList<>();
     private ListView list;
     private TextView empty;
@@ -52,9 +56,11 @@ public class DownloadsActivity extends AppCompatActivity {
     private void reload() {
         files.clear();
         File dir = DownloadService.downloadsDir();
-        File[] arr = dir.listFiles();
-        if (arr != null) {
-            for (File f : arr) if (f.isFile()) files.add(f);
+        try {
+            collectFiles(dir, dir.getCanonicalPath(), 0, new HashSet<String>());
+        } catch (Exception ignored) {
+        }
+        if (!files.isEmpty()) {
             Collections.sort(files, new Comparator<File>() {
                 @Override
                 public int compare(File a, File b) {
@@ -64,6 +70,31 @@ public class DownloadsActivity extends AppCompatActivity {
         }
         adapter.notifyDataSetChanged();
         empty.setVisibility(files.isEmpty() ? View.VISIBLE : View.GONE);
+    }
+
+
+    private void collectFiles(File dir, String root, int depth, Set<String> visited) {
+        if (depth > MAX_DEPTH || files.size() >= MAX_FILES) return;
+        try {
+            String canonical = dir.getCanonicalPath();
+            if (!canonical.equals(root) && !canonical.startsWith(root + File.separator)) return;
+            if (!visited.add(canonical)) return;
+        } catch (Exception e) {
+            return;
+        }
+        File[] arr = dir.listFiles();
+        if (arr == null) return;
+        for (File f : arr) {
+            if (files.size() >= MAX_FILES) return;
+            if (f.isDirectory()) collectFiles(f, root, depth + 1, visited);
+            else if (f.isFile() && !f.getName().endsWith(".part")) {
+                try {
+                    String canonical = f.getCanonicalPath();
+                    if (canonical.startsWith(root + File.separator)) files.add(f);
+                } catch (Exception ignored) {
+                }
+            }
+        }
     }
 
     private void onClick(final File f) {
@@ -108,6 +139,7 @@ public class DownloadsActivity extends AppCompatActivity {
                 .setMessage("Удалить файл с устройства?")
                 .setPositiveButton("Удалить", (d, w) -> {
                     if (f.delete()) {
+                        DownloadService.cleanupEmptyParents(f.getParentFile());
                         Toast.makeText(this, "Удалено", Toast.LENGTH_SHORT).show();
                         reload();
                     } else {
@@ -160,7 +192,11 @@ public class DownloadsActivity extends AppCompatActivity {
             convert.findViewById(R.id.item_queue).setVisibility(View.GONE);
             icon.setText(Util.isVideo(nm) ? "🎬" : (Util.isApk(nm) ? "📦" : "📄"));
             name.setText(nm);
-            sub.setText(Util.humanSize(f.length()));
+            String rel = DownloadService.relativeDisplayPath(f);
+            int slash = rel.lastIndexOf(File.separatorChar);
+            String where = slash > 0 ? rel.substring(0, slash) : "";
+            sub.setText(where.isEmpty() ? Util.humanSize(f.length())
+                    : Util.humanSize(f.length()) + "  ·  " + where);
             return convert;
         }
     }
