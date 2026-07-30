@@ -47,11 +47,12 @@ public class PlayerActivity extends AppCompatActivity {
     private static final int AUTO_HIDE_MS = 3500;
     private static final long SWIPE_FULL_WIDTH_MS = 120000;
     private static final int NET_CACHING = 4000;
-    private static final int LOCAL_CACHING = 10000;
+    private static final int LOCAL_CACHING = 15000;
     private static final long POSITION_SAVE_INTERVAL_MS = 10000;
     private static final long CACHE_PREPARE_TIMEOUT_MS = 30000;
     private static final long CACHE_EARLY_ESTIMATE_MS = 8000;
-    private static final long CACHE_LOCAL_START_TIMEOUT_MS = 10000;
+    private static final long CACHE_LOCAL_START_CHECK_MS = 10000L;
+    private static final long CACHE_LOCAL_START_HARD_TIMEOUT_MS = 45000L;
     private static final long DIRECT_RESUME_LIMIT_MS = 10L * 60L * 1000L;
     private static final float TOP_GESTURE_DEAD_ZONE = 0.20f;
 
@@ -101,6 +102,9 @@ public class PlayerActivity extends AppCompatActivity {
     private boolean viewsDetached = false;
     private boolean destroyed = false;
     private boolean localPlaybackEstablished = false;
+    private boolean localStartObserved = false;
+    private long localStartWatchStartedMs = 0L;
+    private long localStartWatchBytes = 0L;
     private boolean playingFromCompletedFile = false;
     private boolean switchedToCompletedFile = false;
     private boolean fallbackInProgress = false;
@@ -162,9 +166,26 @@ public class PlayerActivity extends AppCompatActivity {
     private final Runnable localStartTimeout = new Runnable() {
         @Override
         public void run() {
-            if (sourceMode == SOURCE_CACHE_LOCAL && !localPlaybackEstablished) {
-                fallbackToDirect("Локальный кэш не смог начать воспроизведение");
+            if (sourceMode != SOURCE_CACHE_LOCAL || localPlaybackEstablished
+                    || destroyed || fallbackInProgress) return;
+            PlaybackCache cache = playbackCache;
+            long now = System.currentTimeMillis();
+            long downloaded = cache == null ? 0L : cache.getDownloadedBytes();
+            boolean downloadProgressed = downloaded > localStartWatchBytes;
+            boolean sourceActive = localStartObserved || currentVoutCount > 0
+                    || (cache != null && cache.isWaitingForData());
+            localStartWatchBytes = downloaded;
+
+            // Тяжёлые контейнеры и старые аппаратные декодеры могут открываться
+            // значительно дольше 10 секунд. Пока источник или загрузка реально
+            // продвигаются, не освобождаем нативный MediaPlayer посреди запуска.
+            if (cache != null && !cache.isFailed()
+                    && now - localStartWatchStartedMs < CACHE_LOCAL_START_HARD_TIMEOUT_MS
+                    && (downloadProgressed || sourceActive)) {
+                ui.postDelayed(this, CACHE_LOCAL_START_CHECK_MS);
+                return;
             }
+            fallbackToDirect("Локальный кэш не смог начать воспроизведение");
         }
     };
     @Override
@@ -313,6 +334,7 @@ public class PlayerActivity extends AppCompatActivity {
         if (type == MediaPlayer.Event.Vout) {
             currentVoutCount = Math.max(0, vout);
             if (currentVoutCount > 0) {
+                if (sourceMode == SOURCE_CACHE_LOCAL) localStartObserved = true;
                 surfaceRecoveryPending = false;
                 zeroVoutSinceMs = 0L;
                 ui.postDelayed(this::applyAspect, 100L);
@@ -321,6 +343,7 @@ public class PlayerActivity extends AppCompatActivity {
         }
         switch (type) {
             case MediaPlayer.Event.Playing:
+                if (sourceMode == SOURCE_CACHE_LOCAL) localStartObserved = true;
                 reconnectAttempts = 0;
                 reconnecting = false;
                 started = true;
@@ -341,6 +364,7 @@ public class PlayerActivity extends AppCompatActivity {
                 break;
             case MediaPlayer.Event.Buffering:
                 if (sourceMode == SOURCE_CACHE_LOCAL) {
+                    if (pct > 0f) localStartObserved = true;
                     if (!started) {
                         showBuffering(playingFromCompletedFile
                                 ? "Запуск локального файла…" : "Запуск из локального кэша…");
@@ -531,6 +555,12 @@ public class PlayerActivity extends AppCompatActivity {
         currentMediaUri = uri;
         currentMediaNetwork = network;
         currentMediaLocalSource = localSource;
+        if (sourceMode == SOURCE_CACHE_LOCAL) {
+            localStartObserved = false;
+            localStartWatchStartedMs = System.currentTimeMillis();
+            PlaybackCache cache = playbackCache;
+            localStartWatchBytes = cache == null ? 0L : cache.getDownloadedBytes();
+        }
         pendingResumeMs = resume;
         currentMs = resume;
         started = false;
@@ -552,6 +582,7 @@ public class PlayerActivity extends AppCompatActivity {
         stopPlaybackCache(!hasQueue);
         sourceMode = SOURCE_DIRECT;
         playingFromCompletedFile = false;
+        localStartObserved = false;
         cacheStatus.setVisibility(View.GONE);
         seek.setSecondaryProgress(0);
         startMedia(Uri.parse(streamUrl(path)), resume, true, false, message);
@@ -608,6 +639,9 @@ public class PlayerActivity extends AppCompatActivity {
         sourceMode = SOURCE_CACHE_LOCAL;
         localPlaybackEstablished = false;
         playingFromCompletedFile = cache.isComplete();
+        localStartObserved = false;
+        localStartWatchStartedMs = System.currentTimeMillis();
+        localStartWatchBytes = cache.getDownloadedBytes();
         playbackState = STATE_STARTING;
         updateCacheUi();
         if (playingFromCompletedFile && cache.getCacheFile() != null) {
@@ -622,7 +656,7 @@ public class PlayerActivity extends AppCompatActivity {
             startMedia(Uri.parse(localUrl), cacheRequestedResumeMs, true, true,
                     "Запуск из локального кэша…");
         }
-        ui.postDelayed(localStartTimeout, CACHE_LOCAL_START_TIMEOUT_MS);
+        ui.postDelayed(localStartTimeout, CACHE_LOCAL_START_CHECK_MS);
     }
 
     private void fallbackToDirect(String reason) {
@@ -688,8 +722,11 @@ public class PlayerActivity extends AppCompatActivity {
         cache.stopServingKeepFile();
         playingFromCompletedFile = true;
         localPlaybackEstablished = false;
+        localStartObserved = false;
+        localStartWatchStartedMs = System.currentTimeMillis();
+        localStartWatchBytes = cache.getDownloadedBytes();
         startMedia(Uri.fromFile(file), resume, false, true, "Переход на локальный файл…");
-        ui.postDelayed(localStartTimeout, CACHE_LOCAL_START_TIMEOUT_MS);
+        ui.postDelayed(localStartTimeout, CACHE_LOCAL_START_CHECK_MS);
     }
 
     private void playEpisode(int index) {
@@ -1045,7 +1082,7 @@ public class PlayerActivity extends AppCompatActivity {
         PlaybackDiagnostics.log(this, "decoder restart sw=" + forceSoftwareDecoder + " at=" + resume);
         flashInfo(message);
         startMedia(currentMediaUri, resume, currentMediaNetwork, currentMediaLocalSource, message + "…");
-        if (sourceMode == SOURCE_CACHE_LOCAL) ui.postDelayed(localStartTimeout, CACHE_LOCAL_START_TIMEOUT_MS);
+        if (sourceMode == SOURCE_CACHE_LOCAL) ui.postDelayed(localStartTimeout, CACHE_LOCAL_START_CHECK_MS);
     }
 
     private void cycleSpeed() {
@@ -1248,8 +1285,10 @@ public class PlayerActivity extends AppCompatActivity {
             showCacheWaiting();
         }
         if (cache.isComplete()) {
+            // Не перезапускаем MediaPlayer посреди серии. Локальный HTTP-источник
+            // после 100% читает уже готовый файл без сети, а смена URI на лету
+            // могла оставить звук активным при зависшем/потерянном видеовыходе.
             maybeStartQueuePrefetch();
-            if (!playingFromCompletedFile) ui.post(this::switchToCompletedFileIfUseful);
         }
     }
 

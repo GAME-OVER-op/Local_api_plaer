@@ -43,12 +43,17 @@ final class PlaybackCache {
     private static final long MAX_PREPARE_BYTES = 300L * 1024L * 1024L;
     private static final long MIN_DYNAMIC_BYTES = 64L * 1024L * 1024L;
     private static final long USER_SEEK_AHEAD_BYTES = 32L * 1024L * 1024L;
-    private static final long DECODER_AHEAD_BYTES = 2L * 1024L * 1024L;
+    private static final long DECODER_AHEAD_BYTES = 8L * 1024L * 1024L;
     private static final long METADATA_TAIL_WINDOW_BYTES = 64L * 1024L * 1024L;
     private static final long MAX_METADATA_RANGE_BYTES = 24L * 1024L * 1024L;
     private static final long STORAGE_RESERVE_BYTES = 128L * 1024L * 1024L;
     private static final long UNKNOWN_DURATION_ASSUMED_MS = 20L * 60L * 1000L;
-    private static final int BUFFER_SIZE = 512 * 1024;
+    // Умеренные буферы уменьшают число Java-чтений и системных вызовов, но
+    // остаются достаточно небольшими для старого Android даже при нескольких
+    // служебных Range-подключениях libVLC.
+    private static final int DOWNLOAD_BUFFER_SIZE = 256 * 1024;
+    private static final int STREAM_BUFFER_SIZE = 256 * 1024;
+    private static final int SOCKET_SEND_BUFFER_SIZE = 512 * 1024;
 
     private final Context context;
     private final Listener listener;
@@ -242,7 +247,7 @@ final class PlaybackCache {
     void cancelKeepFile() { stopInternal(false); }
 
     private void download() {
-        try { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND); } catch (Throwable ignored) {}
+        try { Process.setThreadPriority(Process.THREAD_PRIORITY_DEFAULT + 2); } catch (Throwable ignored) {}
         InputStream in = null;
         FileOutputStream out = null;
         TransferCoordinator.Lease transferLease = null;
@@ -288,9 +293,9 @@ final class PlaybackCache {
             speedSampleBytes = existing;
             notifyChanged(true);
 
-            in = new BufferedInputStream(connection.getInputStream(), BUFFER_SIZE);
+            in = new BufferedInputStream(connection.getInputStream(), DOWNLOAD_BUFFER_SIZE);
             out = new FileOutputStream(cacheFile, append);
-            byte[] buffer = new byte[BUFFER_SIZE];
+            byte[] buffer = new byte[DOWNLOAD_BUFFER_SIZE];
             int read;
             while (!cancelled && (read = in.read(buffer)) != -1) {
                 out.write(buffer, 0, read);
@@ -346,12 +351,12 @@ final class PlaybackCache {
         long expectedPositionBytes = (long) Math.min((double) total,
                 (double) total * Math.max(0L, playbackPositionMs) / (double) mediaDuration);
         long aheadBytes = downloadedBytes - expectedPositionBytes;
-        if (aheadBytes < (long) (consumptionBps * 90.0)) {
+        if (aheadBytes < (long) (consumptionBps * 180.0)) {
             throttleWindowAtMs = System.currentTimeMillis();
             throttleWindowBytes = downloadedBytes;
             return;
         }
-        long targetBps = Math.max(1024L * 1024L, (long) (consumptionBps * 2.0));
+        long targetBps = Math.max(2L * 1024L * 1024L, (long) (consumptionBps * 3.0));
         long now = System.currentTimeMillis();
         if (throttleWindowAtMs <= 0L || now - throttleWindowAtMs > 5000L
                 || downloadedBytes < throttleWindowBytes) {
@@ -363,7 +368,7 @@ final class PlaybackCache {
         long desiredMs = bytes * 1000L / Math.max(1L, targetBps);
         long actualMs = now - throttleWindowAtMs;
         long sleepMs = desiredMs - actualMs;
-        if (sleepMs > 0L) Thread.sleep(Math.min(250L, sleepMs));
+        if (sleepMs > 0L) Thread.sleep(Math.min(50L, sleepMs));
     }
 
     private void updateSpeed() {
@@ -413,11 +418,15 @@ final class PlaybackCache {
             synchronized (dataLock) { dataLock.notifyAll(); }
             Thread thread = downloadThread;
             downloadThread = null;
+            boolean stopped = thread == null || thread == Thread.currentThread();
             if (thread != null && thread != Thread.currentThread()) {
                 thread.interrupt();
-                try { thread.join(1200L); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                try { thread.join(350L); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+                stopped = !thread.isAlive();
             }
-            if (deleteFile && cacheFile != null) {
+            // Нельзя удалять файл, пока FileOutputStream ещё может писать в него.
+            // Если поток не успел завершиться, он удалит файл сам в finally.
+            if (deleteFile && stopped && cacheFile != null) {
                 //noinspection ResultOfMethodCallIgnored
                 cacheFile.delete();
             }
@@ -456,7 +465,7 @@ final class PlaybackCache {
     private final class LocalHttpServer {
         private final Set<Socket> activeSockets = Collections.synchronizedSet(new HashSet<Socket>());
         private final ThreadPoolExecutor workers = new ThreadPoolExecutor(
-                2, 4, 20L, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(6),
+                1, 3, 20L, TimeUnit.SECONDS, new ArrayBlockingQueue<Runnable>(4),
                 r -> {
                     Thread t = new Thread(r, "playback-cache-client");
                     t.setDaemon(true);
@@ -497,6 +506,8 @@ final class PlaybackCache {
                 try {
                     final Socket socket = serverSocket.accept();
                     socket.setSoTimeout(30000);
+                    try { socket.setSendBufferSize(SOCKET_SEND_BUFFER_SIZE); } catch (Throwable ignored) {}
+                    try { socket.setTcpNoDelay(true); } catch (Throwable ignored) {}
                     activeSockets.add(socket);
                     try {
                         workers.execute(() -> handle(socket));
@@ -565,7 +576,7 @@ final class PlaybackCache {
 
                 boolean partial = rangeHeader != null;
                 long length = range.end - range.start + 1L;
-                OutputStream out = new BufferedOutputStream(socket.getOutputStream(), BUFFER_SIZE);
+                OutputStream out = new BufferedOutputStream(socket.getOutputStream(), STREAM_BUFFER_SIZE);
                 writeAscii(out, partial ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n");
                 writeAscii(out, "Content-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n");
                 writeAscii(out, "Content-Length: " + length + "\r\n");
@@ -581,6 +592,11 @@ final class PlaybackCache {
                     if (userSeek) userSeekByte.set(-1L);
                 }
                 streamRange(out, range.start, range.end);
+            } catch (OutOfMemoryError oom) {
+                failed = true;
+                error = "Недостаточно памяти для локального потока";
+                synchronized (dataLock) { dataLock.notifyAll(); }
+                notifyChanged(true);
             } catch (Throwable ignored) {
             } finally {
                 activeSockets.remove(socket);
@@ -632,15 +648,15 @@ final class PlaybackCache {
                 if (connection.getResponseCode() != 206) return false;
                 App.markPaired(context, connection);
                 long length = range.end - range.start + 1L;
-                OutputStream out = new BufferedOutputStream(socket.getOutputStream(), BUFFER_SIZE);
+                OutputStream out = new BufferedOutputStream(socket.getOutputStream(), STREAM_BUFFER_SIZE);
                 writeAscii(out, "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\n");
                 writeAscii(out, "Accept-Ranges: bytes\r\nContent-Length: " + length + "\r\n");
                 writeAscii(out, "Content-Range: bytes " + range.start + "-" + range.end + "/" + total + "\r\nConnection: close\r\n\r\n");
                 out.flush();
                 startedResponse = true;
                 if ("HEAD".equals(method)) return true;
-                in = new BufferedInputStream(connection.getInputStream(), BUFFER_SIZE);
-                byte[] buffer = new byte[BUFFER_SIZE];
+                in = new BufferedInputStream(connection.getInputStream(), DOWNLOAD_BUFFER_SIZE);
+                byte[] buffer = new byte[STREAM_BUFFER_SIZE];
                 long remaining = length;
                 while (!cancelled && remaining > 0) {
                     int read = in.read(buffer, 0, (int) Math.min((long) buffer.length, remaining));
@@ -692,7 +708,8 @@ final class PlaybackCache {
             RandomAccessFile file = new RandomAccessFile(cacheFile, "r");
             try {
                 long position = start;
-                byte[] buffer = new byte[BUFFER_SIZE];
+                file.seek(start);
+                byte[] buffer = new byte[STREAM_BUFFER_SIZE];
                 while (!cancelled && position <= end) {
                     long available = Math.min(downloadedBytes, end + 1L) - position;
                     if (available <= 0) {
@@ -701,10 +718,10 @@ final class PlaybackCache {
                         continue;
                     }
                     int count = (int) Math.min((long) buffer.length, available);
-                    file.seek(position);
                     int read = file.read(buffer, 0, count);
                     if (read <= 0) {
-                        synchronized (dataLock) { dataLock.wait(100L); }
+                        synchronized (dataLock) { dataLock.wait(50L); }
+                        file.seek(position);
                         continue;
                     }
                     out.write(buffer, 0, read);

@@ -1,27 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Entire unbuffered track: opaque dark gray. -->
     <item android:id="@android:id/background">
         <shape>
-            <corners android:radius="3dp" />
-            <solid android:color="#55333333" />
-            <size android:height="4dp" />
+            <corners android:radius="1dp" />
+            <solid android:color="#4A4A4A" />
+            <size android:height="2dp" />
         </shape>
     </item>
+
+    <!-- Downloaded/buffered part: light gray. -->
     <item android:id="@android:id/secondaryProgress">
         <clip>
             <shape>
-                <corners android:radius="3dp" />
-                <solid android:color="#99B8B8B8" />
-                <size android:height="4dp" />
+                <corners android:radius="1dp" />
+                <solid android:color="#9A9A9A" />
+                <size android:height="2dp" />
             </shape>
         </clip>
     </item>
+
+    <!-- Already watched part: orange. -->
     <item android:id="@android:id/progress">
         <clip>
             <shape>
-                <corners android:radius="3dp" />
-                <solid android:color="#FFFFFFFF" />
-                <size android:height="4dp" />
+                <corners android:radius="1dp" />
+                <solid android:color="#FF7043" />
+                <size android:height="2dp" />
             </shape>
         </clip>
     </item>

@@ -28,7 +28,7 @@ final class QueuePrefetcher {
     }
 
     private static final int AHEAD_COUNT = 3;
-    private static final int BUFFER_SIZE = 512 * 1024;
+    private static final int BUFFER_SIZE = 128 * 1024;
     private static final long STORAGE_RESERVE = 128L * 1024L * 1024L;
 
     private final Context context;
@@ -208,8 +208,10 @@ final class QueuePrefetcher {
         closed = true;
         cancelCurrent();
         executor.shutdownNow();
-        try { executor.awaitTermination(1500L, TimeUnit.MILLISECONDS); }
+        boolean stopped = false;
+        try { stopped = executor.awaitTermination(500L, TimeUnit.MILLISECONDS); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-        CacheFiles.cleanup(context, null, false);
+        // Не удаляем файлы, пока старый поток ещё способен писать в них.
+        if (stopped) CacheFiles.cleanup(context, null, false);
     }
 }
