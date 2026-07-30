@@ -36,7 +36,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public class PlayerActivity extends AppCompatActivity {
@@ -98,6 +100,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private final List<String> episodePaths = new ArrayList<>();
     private final List<String> episodeNames = new ArrayList<>();
+    private final Map<String, Long> knownFileSizes = new HashMap<>();
     private int episodeIndex = -1;
     private boolean hasQueue = false;
 
@@ -150,17 +153,23 @@ public class PlayerActivity extends AppCompatActivity {
         folder = getIntent().getStringExtra("folder");
         serverName = getIntent().getStringExtra("server_name");
         local = getIntent().getBooleanExtra("local", false);
+        long initialSize = getIntent().getLongExtra("size", 0L);
+        if (!local && path != null && initialSize > 0) knownFileSizes.put(path, initialSize);
         if (folder == null) folder = "";
         if (serverName == null) serverName = "";
 
         String[] queuePathsExtra = getIntent().getStringArrayExtra("queue_paths");
         String[] queueNamesExtra = getIntent().getStringArrayExtra("queue_names");
+        long[] queueSizesExtra = getIntent().getLongArrayExtra("queue_sizes");
         if (queuePathsExtra != null && queueNamesExtra != null && queuePathsExtra.length > 0
                 && queuePathsExtra.length == queueNamesExtra.length) {
             hasQueue = true;
             for (int qi = 0; qi < queuePathsExtra.length; qi++) {
                 episodePaths.add(queuePathsExtra[qi]);
                 episodeNames.add(queueNamesExtra[qi]);
+                if (queueSizesExtra != null && qi < queueSizesExtra.length && queueSizesExtra[qi] > 0) {
+                    knownFileSizes.put(queuePathsExtra[qi], queueSizesExtra[qi]);
+                }
             }
         }
 
@@ -460,7 +469,8 @@ public class PlayerActivity extends AppCompatActivity {
             playbackCache = new PlaybackCache(this, () -> {
                 if (!destroyed) ui.post(this::updateCacheUi);
             });
-            playbackCache.start(base, path);
+            Long knownSize = knownFileSizes.get(path);
+            playbackCache.start(base, path, knownSize == null ? -1L : knownSize);
             ui.post(cacheDecision);
         } catch (Throwable e) {
             fallbackToDirect("Локальный кэш недоступен");
@@ -764,27 +774,31 @@ public class PlayerActivity extends AppCompatActivity {
                 String body = httpGet(base + "/list?path=" + Util.enc(f));
                 JSONObject o = new JSONObject(body);
                 JSONArray arr = o.getJSONArray("entries");
-                final List<String[]> vids = new ArrayList<>();
+                final List<Object[]> vids = new ArrayList<>();
                 for (int i = 0; i < arr.length(); i++) {
                     JSONObject e = arr.getJSONObject(i);
                     if (e.getBoolean("is_dir")) continue;
                     String nm = e.getString("name");
                     if (!Util.isVideo(nm)) continue;
                     String fp = f.isEmpty() ? nm : f + "/" + nm;
-                    vids.add(new String[]{nm, fp});
+                    vids.add(new Object[]{nm, fp, e.optLong("size", 0L)});
                 }
-                Collections.sort(vids, new Comparator<String[]>() {
+                Collections.sort(vids, new Comparator<Object[]>() {
                     @Override
-                    public int compare(String[] a, String[] b) {
-                        return Util.naturalCompare(a[0], b[0]);
+                    public int compare(Object[] a, Object[] b) {
+                        return Util.naturalCompare((String) a[0], (String) b[0]);
                     }
                 });
                 ui.post(() -> {
                     episodeNames.clear();
                     episodePaths.clear();
-                    for (String[] v : vids) {
-                        episodeNames.add(v[0]);
-                        episodePaths.add(v[1]);
+                    for (Object[] v : vids) {
+                        String episodeName = (String) v[0];
+                        String episodePath = (String) v[1];
+                        long episodeSize = (Long) v[2];
+                        episodeNames.add(episodeName);
+                        episodePaths.add(episodePath);
+                        if (episodeSize > 0) knownFileSizes.put(episodePath, episodeSize);
                     }
                     updateEpisodeIndex();
                 });

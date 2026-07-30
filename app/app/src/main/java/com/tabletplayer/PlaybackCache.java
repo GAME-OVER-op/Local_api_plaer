@@ -18,6 +18,8 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.util.Locale;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -66,13 +68,13 @@ final class PlaybackCache {
         cacheFile = new File(cacheDir, "current.part");
     }
 
-    void start(final String base, final String path) throws Exception {
+    void start(final String base, final String path, long knownTotalBytes) throws Exception {
         stopInternal(true);
         cancelled = false;
         complete = false;
         failed = false;
         error = "";
-        totalBytes = -1L;
+        totalBytes = knownTotalBytes > 0 ? knownTotalBytes : -1L;
         downloadedBytes = 0L;
         startedAtMs = System.currentTimeMillis();
         waitingClients.set(0);
@@ -156,7 +158,8 @@ final class PlaybackCache {
             if (code != 200) throw new IllegalStateException("HTTP " + code);
             App.markPaired(context, connection);
 
-            totalBytes = parseLong(connection.getHeaderField("Content-Length"), -1L);
+            long responseTotal = responseTotalBytes(connection);
+            if (responseTotal > 0) totalBytes = responseTotal;
             if (totalBytes <= 0) throw new IllegalStateException("Сервер не сообщил размер файла");
             long usable = cacheDir.getUsableSpace();
             if (usable > 0 && totalBytes > Math.max(0L, usable - STORAGE_RESERVE_BYTES)) {
@@ -266,6 +269,54 @@ final class PlaybackCache {
         } catch (Exception e) {
             return fallback;
         }
+    }
+
+    /**
+     * На старых версиях Android getHeaderField("Content-Length") иногда не
+     * возвращает значение для нестандартно сформированного ответа. Поэтому
+     * проверяем заголовки несколькими способами. Content-Range и X-File-Size
+     * оставлены как резерв для совместимости с другими версиями сервера.
+     */
+    private static long responseTotalBytes(HttpURLConnection connection) {
+        long total = parseLong(connection.getHeaderField("Content-Length"), -1L);
+        if (total > 0) return total;
+
+        total = parseLong(connection.getHeaderField("X-File-Size"), -1L);
+        if (total > 0) return total;
+
+        total = totalFromContentRange(connection.getHeaderField("Content-Range"));
+        if (total > 0) return total;
+
+        try {
+            Map<String, List<String>> headers = connection.getHeaderFields();
+            if (headers != null) {
+                for (Map.Entry<String, List<String>> entry : headers.entrySet()) {
+                    String key = entry.getKey();
+                    if (key == null || entry.getValue() == null) continue;
+                    for (String value : entry.getValue()) {
+                        if ("content-length".equalsIgnoreCase(key)) {
+                            total = parseLong(value, -1L);
+                        } else if ("x-file-size".equalsIgnoreCase(key)) {
+                            total = parseLong(value, -1L);
+                        } else if ("content-range".equalsIgnoreCase(key)) {
+                            total = totalFromContentRange(value);
+                        }
+                        if (total > 0) return total;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return -1L;
+    }
+
+    private static long totalFromContentRange(String value) {
+        if (value == null) return -1L;
+        int slash = value.lastIndexOf('/');
+        if (slash < 0 || slash + 1 >= value.length()) return -1L;
+        String total = value.substring(slash + 1).trim();
+        if ("*".equals(total)) return -1L;
+        return parseLong(total, -1L);
     }
 
     private final class LocalHttpServer {

@@ -55,6 +55,7 @@ public class BrowseActivity extends AppCompatActivity {
     private boolean queueMode = false;
     private final List<String> queuePaths = new ArrayList<>();
     private final List<String> queueNames = new ArrayList<>();
+    private final List<Long> queueSizes = new ArrayList<>();
     private View queueBar;
     private TextView queueInfo;
     private Button queueBtn, queueClear, queuePlay;
@@ -122,6 +123,7 @@ public class BrowseActivity extends AppCompatActivity {
         queueClear.setOnClickListener(v -> {
             queuePaths.clear();
             queueNames.clear();
+            queueSizes.clear();
             updateQueueUi();
             adapter.notifyDataSetChanged();
         });
@@ -360,9 +362,11 @@ public class BrowseActivity extends AppCompatActivity {
         if (idx >= 0) {
             queuePaths.remove(idx);
             queueNames.remove(idx);
+            queueSizes.remove(idx);
         } else {
             queuePaths.add(e.fullPath);
             queueNames.add(e.name);
+            queueSizes.add(e.size);
         }
         updateQueueUi();
         adapter.notifyDataSetChanged();
@@ -387,6 +391,10 @@ public class BrowseActivity extends AppCompatActivity {
         i.putExtra("server_name", serverName);
         i.putExtra("queue_paths", queuePaths.toArray(new String[0]));
         i.putExtra("queue_names", queueNames.toArray(new String[0]));
+        long[] sizes = new long[queueSizes.size()];
+        for (int n = 0; n < queueSizes.size(); n++) sizes[n] = queueSizes.get(n);
+        i.putExtra("queue_sizes", sizes);
+        i.putExtra("size", sizes.length > 0 ? sizes[0] : 0L);
         startActivity(i);
         overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }
@@ -399,6 +407,7 @@ public class BrowseActivity extends AppCompatActivity {
         i.putExtra("base", base);
         i.putExtra("path", e.fullPath);
         i.putExtra("name", e.name);
+        i.putExtra("size", e.size);
         i.putExtra("folder", folder);
         i.putExtra("server_name", serverName);
         startActivity(i);
