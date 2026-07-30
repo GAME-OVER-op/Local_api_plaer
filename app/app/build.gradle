@@ -46,6 +46,9 @@ android {
         // Android 4.4 не блокируют выпуск до их точечной классификации.
         abortOnError false
         checkReleaseBuilds true
+        // Личная sideload-сборка намеренно сохраняет targetSdk 22 для старого поведения Android.
+        // Отключаем только требование Google Play; остальные проверки Lint остаются включены.
+        disable += ['ExpiredTargetSdkVersion']
         htmlReport true
         textReport true
     }
