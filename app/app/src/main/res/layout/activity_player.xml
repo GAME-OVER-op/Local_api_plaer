@@ -33,6 +33,27 @@
         android:textStyle="bold"
         android:visibility="gone" />
 
+    <TextView
+        android:id="@+id/technical_card"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|left"
+        android:layout_marginLeft="12dp"
+        android:layout_marginTop="62dp"
+        android:background="@drawable/technical_card_bg"
+        android:clickable="false"
+        android:focusable="false"
+        android:fontFamily="monospace"
+        android:maxWidth="300dp"
+        android:paddingLeft="10dp"
+        android:paddingRight="10dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:text="Локальный кэш"
+        android:textColor="#F2FFFFFF"
+        android:textSize="11sp"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/buffering"
         android:layout_width="wrap_content"

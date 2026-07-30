@@ -123,6 +123,17 @@ public class Util {
         return name != null && name.toLowerCase().endsWith(".apk");
     }
 
+    public static String fmtCompactDuration(long ms) {
+        if (ms < 0) ms = 0;
+        long totalSeconds = ms / 1000L;
+        long hours = totalSeconds / 3600L;
+        long minutes = (totalSeconds % 3600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        if (hours > 0) return String.format(java.util.Locale.US, "%d ч %02d мин", hours, minutes);
+        if (minutes > 0) return String.format(java.util.Locale.US, "%d мин %02d с", minutes, seconds);
+        return seconds + " с";
+    }
+
     public static String fmtTime(long ms) {
         if (ms < 0) ms = 0;
         long total = ms / 1000;

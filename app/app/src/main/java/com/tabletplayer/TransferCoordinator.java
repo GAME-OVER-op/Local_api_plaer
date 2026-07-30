@@ -35,6 +35,12 @@ final class TransferCoordinator {
         }
     }
 
+    static int activeCount() {
+        synchronized (LOCK) {
+            return active;
+        }
+    }
+
     private static boolean hasHigherPriorityWaiter(int priority) {
         for (int i = 0; i < priority; i++) {
             if (WAITING[i] > 0) return true;
