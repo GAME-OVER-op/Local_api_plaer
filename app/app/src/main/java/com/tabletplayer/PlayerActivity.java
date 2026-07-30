@@ -482,7 +482,7 @@ public class PlayerActivity extends AppCompatActivity {
                         return true;
                     }
                     switch (event.getKeyCode()) {
-                        case KeyEvent.KEYCODE_HEADSEETHOOK:
+                        case KeyEvent.KEYCODE_HEADSETHOOK:
                         case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
                             togglePlay();
                             return true;
