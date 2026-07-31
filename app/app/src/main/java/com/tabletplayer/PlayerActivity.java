@@ -51,8 +51,6 @@ public class PlayerActivity extends AppCompatActivity {
     private static final long POSITION_SAVE_INTERVAL_MS = 10000;
     private static final long CACHE_LOCAL_START_CHECK_MS = 10000L;
     private static final long CACHE_LOCAL_START_HARD_TIMEOUT_MS = 45000L;
-    private static final long LOCAL_FILE_START_CHECK_MS = 10000L;
-    private static final long LOCAL_FILE_MIN_PROGRESS_MS = 750L;
     private static final long DIRECT_RESUME_LIMIT_MS = 10L * 60L * 1000L;
     private static final float TOP_GESTURE_DEAD_ZONE = 0.20f;
 
@@ -116,8 +114,6 @@ public class PlayerActivity extends AppCompatActivity {
     private Uri currentMediaUri;
     private boolean currentMediaNetwork = false;
     private boolean currentMediaLocalSource = false;
-    private int localFileWatchGeneration = -1;
-    private long localFileWatchStartPositionMs = 0L;
     private long zeroVoutSinceMs = 0L;
     private long lastVoutProgressMs = 0L;
     private boolean surfaceRecoveryPending = false;
@@ -194,41 +190,6 @@ public class PlayerActivity extends AppCompatActivity {
                 return;
             }
             fallbackToDirect("Локальный кэш не смог начать воспроизведение");
-        }
-    };
-    private final Runnable localFileStartTimeout = new Runnable() {
-        @Override
-        public void run() {
-            if (destroyed || player == null || currentMediaNetwork
-                    || sourceMode != SOURCE_DIRECT
-                    || localFileWatchGeneration != mediaGeneration) return;
-
-            boolean playingNow = false;
-            try { playingNow = player.isPlaying(); } catch (Throwable ignored) {}
-            if (started && !playingNow) {
-                ui.postDelayed(this, LOCAL_FILE_START_CHECK_MS);
-                return;
-            }
-
-            long position = 0L;
-            try { position = Math.max(0L, player.getTime()); } catch (Throwable ignored) {}
-            if (position >= localFileWatchStartPositionMs + LOCAL_FILE_MIN_PROGRESS_MS) {
-                localFileWatchGeneration = -1;
-                return;
-            }
-
-            PlaybackDiagnostics.log(PlayerActivity.this,
-                    "local file stalled gen=" + mediaGeneration + " at=" + position
-                            + " sw=" + forceSoftwareDecoder);
-            if (!softwareRetryUsed) {
-                forceSoftwareDecoder = true;
-                softwareRetryUsed = true;
-                restartCurrentDecoder("Повтор локального файла с программным декодером");
-            } else {
-                localFileWatchGeneration = -1;
-                Toast.makeText(PlayerActivity.this,
-                        "Локальный файл не начал воспроизведение", Toast.LENGTH_LONG).show();
-            }
         }
     };
     @Override
@@ -357,7 +318,7 @@ public class PlayerActivity extends AppCompatActivity {
         options.add("--network-caching=" + NET_CACHING);
         options.add("--file-caching=" + LOCAL_CACHING);
         libVLC = new LibVLC(this, options);
-        PlaybackDiagnostics.log(this, "libvlc init standard frame skipping");
+        PlaybackDiagnostics.log(this, "libvlc init standard frame skipping; stable downloaded-file path");
     }
 
     private MediaPlayer createPlayer(final int generation) {
@@ -438,7 +399,11 @@ public class PlayerActivity extends AppCompatActivity {
             case MediaPlayer.Event.EncounteredError:
                 PlaybackDiagnostics.log(this, "error gen=" + generation + " mode=" + sourceMode
                         + " file=" + playingFromCompletedFile + " vout=" + currentVoutCount);
-                if ((playingFromCompletedFile || local) && !softwareRetryUsed) {
+                if (local) {
+                    // Для готового файла не пересоздаём нативный MediaPlayer из callback:
+                    // на старом планшете эта цепочка могла завершаться native crash.
+                    handleDrop();
+                } else if (playingFromCompletedFile && !softwareRetryUsed) {
                     forceSoftwareDecoder = true;
                     softwareRetryUsed = true;
                     restartCurrentDecoder("Повтор с программным декодером");
@@ -545,14 +510,24 @@ public class PlayerActivity extends AppCompatActivity {
 
     private Media buildMedia(Uri uri, boolean network, boolean localSource) {
         Media media = new Media(libVLC, uri);
+
+        // Файлы из раздела «Загрузки» воспроизводим старым стабильным путём.
+        // Не запускаем для них автоматические decoder-retry и не применяем
+        // параметры растущего локального кэша.
+        if (local && !network) {
+            // По умолчанию повторяем старый аппаратный путь; ручной выбор
+            // программного декодера по долгому нажатию остаётся доступен.
+            media.setHWDecoderEnabled(!forceSoftwareDecoder, false);
+            media.addOption(":file-caching=" + NET_CACHING);
+            return media;
+        }
+
         media.setHWDecoderEnabled(!forceSoftwareDecoder, false);
         int caching = localSource ? LOCAL_CACHING : NET_CACHING;
         if (network) {
             media.addOption(":network-caching=" + caching);
             media.addOption(":live-caching=" + caching);
         } else {
-            // Обычному локальному файлу live-caching не нужен: он мог оставить
-            // декодер на первом кадре без дальнейшего продвижения времени.
             media.addOption(":file-caching=" + caching);
         }
         return media;
@@ -561,8 +536,6 @@ public class PlayerActivity extends AppCompatActivity {
     private void playPath(String p, String nm, long resume) {
         ui.removeCallbacks(cacheDecision);
         ui.removeCallbacks(localStartTimeout);
-        ui.removeCallbacks(localFileStartTimeout);
-        localFileWatchGeneration = -1;
         fallbackInProgress = false;
         playbackState = STATE_SWITCHING;
         String previousPath = path;
@@ -624,12 +597,6 @@ public class PlayerActivity extends AppCompatActivity {
         currentMediaUri = uri;
         currentMediaNetwork = network;
         currentMediaLocalSource = localSource;
-        ui.removeCallbacks(localFileStartTimeout);
-        localFileWatchGeneration = -1;
-        if (!network && sourceMode == SOURCE_DIRECT) {
-            localFileWatchGeneration = generation;
-            localFileWatchStartPositionMs = Math.max(0L, resume);
-        }
         if (sourceMode == SOURCE_CACHE_LOCAL) {
             localStartObserved = false;
             localStartWatchStartedMs = System.currentTimeMillis();
@@ -651,9 +618,6 @@ public class PlayerActivity extends AppCompatActivity {
         media.release();
         player.play();
         player.setRate(speeds[speedIdx]);
-        if (!network && sourceMode == SOURCE_DIRECT) {
-            ui.postDelayed(localFileStartTimeout, LOCAL_FILE_START_CHECK_MS);
-        }
         PlaybackDiagnostics.log(this, "start gen=" + generation + " mode=" + sourceMode
                 + " sw=" + forceSoftwareDecoder + " source="
                 + (network ? (localSource ? "local-http-cache" : "network") : "local-file"));
@@ -753,8 +717,6 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void releasePlayerForTransition() {
-        ui.removeCallbacks(localFileStartTimeout);
-        localFileWatchGeneration = -1;
         MediaPlayer old = player;
         player = null;
         mediaGeneration++;
@@ -1472,11 +1434,6 @@ public class PlayerActivity extends AppCompatActivity {
             Store.setDuration(this, path, duration);
         }
         long reportedTime = player.getTime();
-        if (!currentMediaNetwork && localFileWatchGeneration == mediaGeneration
-                && reportedTime >= localFileWatchStartPositionMs + LOCAL_FILE_MIN_PROGRESS_MS) {
-            ui.removeCallbacks(localFileStartTimeout);
-            localFileWatchGeneration = -1;
-        }
         // В момент естественного окончания libVLC иногда сначала возвращает 0,
         // а затем присылает EndReached. Не затираем последнюю реальную позицию.
         if (reportedTime > 0 || currentMs <= 0 || !started) currentMs = Math.max(0L, reportedTime);
