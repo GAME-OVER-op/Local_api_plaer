@@ -5,6 +5,7 @@ import android.content.Context;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
+import java.util.Arrays;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayDeque;
@@ -39,6 +40,9 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private static final long MIN_KEEP_WAIT_SPEED_BYTES_PER_SEC = 512L * 1024L;
     private static final int BUFFER_SIZE = 256 * 1024;
     private static final int MAX_CHUNK_RETRIES = 3;
+    private static final long RAM_BUFFER_MIN_BYTES = 16L * MB;
+    private static final long RAM_BUFFER_MAX_BYTES = 48L * MB;
+    private static final long UI_PROGRESS_INTERVAL_MS = 800L;
 
     private static final int CHUNK_PENDING = 0;
     private static final int CHUNK_IN_FLIGHT = 1;
@@ -53,6 +57,9 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private final List<HttpURLConnection> activeConnections = new ArrayList<>();
     private final ArrayList<Chunk> chunks = new ArrayList<>();
     private final ArrayDeque<Chunk> pendingChunks = new ArrayDeque<>();
+    private final Object writeLock = new Object();
+    private final ArrayDeque<WriteBlock> writeQueue = new ArrayDeque<>();
+
 
     private volatile boolean cancelled;
     private volatile boolean complete;
@@ -68,6 +75,15 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private long scheduledUntilBytes;
     private long seekFocusStartBytes = -1;
     private long seekFocusScheduledUntilBytes = -1;
+    private long networkReceivedBytes;
+    private long diskWrittenBytes;
+    private long queuedWriteBytes;
+    private long maxRamBufferBytes;
+    private long lastSpeedUpdateMs;
+    private long lastSpeedBytes;
+    private double smoothedSpeedBytesPerSec;
+    private volatile boolean writerStopRequested;
+
 
     public PlaybackCacheTask(Context context, PlaybackCacheManager.Entry entry, boolean prefetch, Listener listener) {
         this.context = context.getApplicationContext();
@@ -87,10 +103,17 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         }
     }
 
-    /** Скачано суммарно, включая окна после seek. Может быть больше downloadedBytes(). */
+    /** Получено из сети суммарно, включая окна после seek. Может быть больше downloadedBytes(). */
     public long cachedBytes() {
         synchronized (lock) {
-            return Math.max(entry.cachedBytes, entry.downloadedBytes);
+            return Math.max(Math.max(entry.cachedBytes, entry.downloadedBytes), networkReceivedBytes);
+        }
+    }
+
+    /** Уже записано на диск. Range для proxy считается готовым только после записи. */
+    public long diskWrittenBytes() {
+        synchronized (lock) {
+            return diskWrittenBytes;
         }
     }
 
@@ -190,6 +213,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     public long recentSpeedBytesPerSec() {
         synchronized (lock) {
+            if (smoothedSpeedBytesPerSec > 0) return Math.max(0L, (long) smoothedSpeedBytesPerSec);
             if (samples.size() < 2) return 0;
             Sample first = samples.peekFirst();
             Sample last = samples.peekLast();
@@ -235,9 +259,16 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
                 scheduledUntilBytes = 0;
                 seekFocusStartBytes = -1;
                 seekFocusScheduledUntilBytes = -1;
+                networkReceivedBytes = 0;
+                diskWrittenBytes = 0;
+                queuedWriteBytes = 0;
+                maxRamBufferBytes = maxRamBufferBytesFor(total);
+                lastSpeedUpdateMs = 0;
+                lastSpeedBytes = 0;
+                smoothedSpeedBytesPerSec = 0;
                 addSampleLocked(0);
             }
-            PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "total=" + total + " target=" + prepareTargetBytes() + " chunk=" + chunkSizeFor(total) + " workers=" + workerCount() + " max=" + TransferCoordinator.get().maxRemoteTransfers());
+            PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "total=" + total + " target=" + prepareTargetBytes() + " chunk=" + chunkSizeFor(total) + " workers=" + workerCount() + " ram=" + maxRamBufferBytesFor(total) + " max=" + TransferCoordinator.get().maxRemoteTransfers());
             downloadWindowed(total);
         } catch (Exception e) {
             error = e;
@@ -302,6 +333,17 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             }
         }
 
+        writerStopRequested = false;
+        Thread writer = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                runDiskWriter();
+            }
+        }, prefetch ? "PrefetchDiskWriter" : "CacheDiskWriter");
+        writer.setDaemon(true);
+        writer.setPriority(prefetch ? Thread.MIN_PRIORITY : Thread.NORM_PRIORITY);
+        writer.start();
+
         int workers = Math.max(1, workerCount());
         ArrayList<Thread> threads = new ArrayList<>();
         for (int i = 0; i < workers; i++) {
@@ -339,6 +381,14 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
                 if (cancelled || error != null) break;
             }
         } while (anyAlive && !cancelled && error == null);
+
+        requestWriterStop();
+        try {
+            writer.join(30000L);
+        } catch (InterruptedException e) {
+            cancelled = true;
+            Thread.currentThread().interrupt();
+        }
 
         if (error != null) throw error;
         if (!cancelled && entry.downloadedBytes >= total) completeFile(total);
@@ -407,7 +457,6 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         TransferCoordinator.Lease l = null;
         HttpURLConnection c = null;
         InputStream in = null;
-        RandomAccessFile out = null;
         try {
             l = TransferCoordinator.get().acquire(prefetch ? TransferCoordinator.Priority.PREFETCH : TransferCoordinator.Priority.PLAYBACK_CACHE, prefetch ? "prefetch-range" : "cache-range");
             c = (HttpURLConnection) new URL(entry.base + "/download?path=" + Util.enc(entry.path)).openConnection();
@@ -419,27 +468,145 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             int code = c.getResponseCode();
             if (code != 206) throw new RuntimeException("HTTP " + code + " for range " + chunk.start + "-" + chunk.end);
             in = c.getInputStream();
-            out = new RandomAccessFile(entry.partFile, "rw");
-            out.seek(chunk.start);
             byte[] buf = new byte[BUFFER_SIZE];
             long pos = chunk.start;
             int read;
-            while (!cancelled && pos <= chunk.end && (read = in.read(buf, 0, (int) Math.min(buf.length, chunk.end - pos + 1))) != -1) {
-                out.write(buf, 0, read);
+            while (!cancelled && error == null && pos <= chunk.end && (read = in.read(buf, 0, (int) Math.min(buf.length, chunk.end - pos + 1))) != -1) {
+                byte[] data = Arrays.copyOf(buf, read);
+                enqueueWriteBlock(new WriteBlock(chunk, pos, data, read, false));
                 pos += read;
+                onNetworkBytes(chunk, pos - chunk.start);
             }
-            if (cancelled) return;
+            if (cancelled || error != null) return;
             if (pos <= chunk.end) throw new RuntimeException("short range " + chunk.start + "-" + chunk.end + " got=" + (pos - chunk.start));
-            markChunkComplete(chunk);
+            enqueueWriteBlock(new WriteBlock(chunk, 0, null, 0, true));
         } finally {
             if (in != null) try { in.close(); } catch (Exception ignored) {}
-            if (out != null) try { out.close(); } catch (Exception ignored) {}
             if (c != null) {
                 unregisterConnection(c);
                 c.disconnect();
             }
             if (l != null) l.close();
         }
+    }
+
+    private void runDiskWriter() {
+        RandomAccessFile out = null;
+        try {
+            out = new RandomAccessFile(entry.partFile, "rw");
+            while (!cancelled || hasQueuedWriteBlocks() || !writerStopRequested) {
+                WriteBlock block = takeWriteBlock();
+                if (block == null) {
+                    if (writerStopRequested || cancelled || error != null) break;
+                    continue;
+                }
+                if (block.completeMarker) {
+                    markChunkComplete(block.chunk);
+                    continue;
+                }
+                out.seek(block.position);
+                out.write(block.data, 0, block.length);
+                onDiskBytes(block.chunk, block.position + block.length - block.chunk.start);
+            }
+        } catch (Exception e) {
+            error = e;
+            cancelled = true;
+            PlayerDiagnostics.log(context, prefetch ? "prefetch-writer-error" : "cache-writer-error", e);
+            disconnectAll();
+            synchronized (lock) { lock.notifyAll(); }
+            synchronized (writeLock) { writeLock.notifyAll(); }
+        } finally {
+            if (out != null) try { out.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void enqueueWriteBlock(WriteBlock block) throws InterruptedException {
+        synchronized (writeLock) {
+            while (!cancelled && error == null && block.length > 0 && queuedWriteBytes + block.length > maxRamBufferBytes) {
+                writeLock.wait(250L);
+            }
+            if (cancelled || error != null) throw new InterruptedException("cache writer stopped");
+            writeQueue.addLast(block);
+            queuedWriteBytes += block.length;
+            writeLock.notifyAll();
+        }
+    }
+
+    private WriteBlock takeWriteBlock() throws InterruptedException {
+        synchronized (writeLock) {
+            while (!writerStopRequested && !cancelled && error == null && writeQueue.isEmpty()) {
+                writeLock.wait(250L);
+            }
+            WriteBlock block = writeQueue.pollFirst();
+            if (block != null && block.length > 0) {
+                queuedWriteBytes -= block.length;
+                if (queuedWriteBytes < 0) queuedWriteBytes = 0;
+                writeLock.notifyAll();
+            }
+            return block;
+        }
+    }
+
+    private boolean hasQueuedWriteBlocks() {
+        synchronized (writeLock) {
+            return !writeQueue.isEmpty();
+        }
+    }
+
+    private void requestWriterStop() {
+        writerStopRequested = true;
+        synchronized (writeLock) {
+            writeLock.notifyAll();
+        }
+    }
+
+    private void onNetworkBytes(Chunk chunk, long receivedInChunk) {
+        if (chunk == null || receivedInChunk <= 0) return;
+        synchronized (lock) {
+            long clamped = Math.max(0L, Math.min(chunk.length(), receivedInChunk));
+            long delta = clamped - chunk.receivedBytes;
+            if (delta <= 0) return;
+            chunk.receivedBytes = clamped;
+            long total = entry.totalBytes;
+            networkReceivedBytes += delta;
+            if (total > 0 && networkReceivedBytes > total) networkReceivedBytes = total;
+            if (networkReceivedBytes > entry.cachedBytes) entry.cachedBytes = networkReceivedBytes;
+            updateSmoothedSpeedLocked();
+            addSampleLocked(entry.cachedBytes);
+            lock.notifyAll();
+        }
+        maybeNotifyProgress();
+    }
+
+    private void onDiskBytes(Chunk chunk, long writtenInChunk) {
+        if (chunk == null || writtenInChunk <= 0) return;
+        synchronized (lock) {
+            long clamped = Math.max(0L, Math.min(chunk.length(), writtenInChunk));
+            long delta = clamped - chunk.writtenBytes;
+            if (delta <= 0) return;
+            chunk.writtenBytes = clamped;
+            diskWrittenBytes += delta;
+            long total = entry.totalBytes;
+            if (total > 0 && diskWrittenBytes > total) diskWrittenBytes = total;
+            lock.notifyAll();
+        }
+    }
+
+    private void updateSmoothedSpeedLocked() {
+        long now = System.currentTimeMillis();
+        if (lastSpeedUpdateMs <= 0) {
+            lastSpeedUpdateMs = now;
+            lastSpeedBytes = networkReceivedBytes;
+            return;
+        }
+        long dt = now - lastSpeedUpdateMs;
+        if (dt < 300L) return;
+        long db = networkReceivedBytes - lastSpeedBytes;
+        long instant = dt > 0 ? Math.max(0L, db * 1000L / dt) : 0L;
+        if (smoothedSpeedBytesPerSec <= 0) smoothedSpeedBytesPerSec = instant;
+        else smoothedSpeedBytesPerSec = smoothedSpeedBytesPerSec * 0.75d + instant * 0.25d;
+        lastSpeedUpdateMs = now;
+        lastSpeedBytes = networkReceivedBytes;
     }
 
     private void scheduleRangeLocked(long start, long endExclusive, boolean priority) {
@@ -512,12 +679,9 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         synchronized (lock) {
             if (chunk.state == CHUNK_DONE) return;
             chunk.state = CHUNK_DONE;
-            long cached = entry.cachedBytes + chunk.length();
-            if (cached > entry.totalBytes && entry.totalBytes > 0) cached = entry.totalBytes;
-            entry.cachedBytes = cached;
             entry.downloadedBytes = contiguousEndFromLocked(0);
             if (entry.totalBytes > 0 && entry.downloadedBytes > entry.totalBytes) entry.downloadedBytes = entry.totalBytes;
-            addSampleLocked(entry.cachedBytes);
+            if (diskWrittenBytes > entry.cachedBytes) entry.cachedBytes = diskWrittenBytes;
             maybeScheduleWindowLocked(entry.totalBytes);
             lock.notifyAll();
         }
@@ -598,7 +762,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     private void maybeNotifyProgress() {
         long now = System.currentTimeMillis();
-        if (now - lastProgressNotifyMs < 500L) return;
+        if (now - lastProgressNotifyMs < UI_PROGRESS_INTERVAL_MS) return;
         lastProgressNotifyMs = now;
         if (listener != null) listener.onCacheProgress(this);
     }
@@ -651,9 +815,13 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     @Override
     public void close() {
         cancelled = true;
+        requestWriterStop();
         disconnectAll();
         synchronized (lock) {
             lock.notifyAll();
+        }
+        synchronized (writeLock) {
+            writeLock.notifyAll();
         }
     }
 
@@ -708,6 +876,13 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private boolean hasInFlightLocked() {
         for (Chunk c : chunks) if (c.state == CHUNK_IN_FLIGHT) return true;
         return false;
+    }
+
+    private static long maxRamBufferBytesFor(long total) {
+        if (total <= 0) return 32L * MB;
+        if (total <= 256L * MB) return 24L * MB;
+        if (total <= 1024L * MB) return 32L * MB;
+        return RAM_BUFFER_MAX_BYTES;
     }
 
     private static int autoWorkerCount(long total) {
@@ -799,6 +974,8 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private static final class Chunk {
         final long start;
         final long end;
+        long receivedBytes;
+        long writtenBytes;
         int state = CHUNK_PENDING;
 
         Chunk(long start, long end) {
@@ -808,6 +985,22 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
         long length() {
             return end - start + 1L;
+        }
+    }
+
+    private static final class WriteBlock {
+        final Chunk chunk;
+        final long position;
+        final byte[] data;
+        final int length;
+        final boolean completeMarker;
+
+        WriteBlock(Chunk chunk, long position, byte[] data, int length, boolean completeMarker) {
+            this.chunk = chunk;
+            this.position = position;
+            this.data = data;
+            this.length = length;
+            this.completeMarker = completeMarker;
         }
     }
 

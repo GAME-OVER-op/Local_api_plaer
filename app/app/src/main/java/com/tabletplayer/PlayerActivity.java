@@ -774,7 +774,6 @@ public class PlayerActivity extends AppCompatActivity {
                 long seekByte = cacheTask.bytesForTime(targetMs, duration);
                 cacheTask.requestSeekWindow(seekByte, extra);
                 setPlaying(false);
-                player.setTime(targetMs);
                 showBuffering("Ожидание кэша: " + cacheProgressLine(cacheTask, false) + " · переход " + Util.fmtTime(targetMs));
                 return;
             }
@@ -1365,9 +1364,11 @@ public class PlayerActivity extends AppCompatActivity {
     private final Runnable hideInfo = () -> gestureInfo.setVisibility(View.GONE);
 
     private void showBuffering(String text) {
-        bufferingText.setText(text);
+        if (text == null) text = "";
+        CharSequence old = bufferingText.getText();
+        if (old == null || !text.contentEquals(old)) bufferingText.setText(text);
         retryBtn.setVisibility(View.GONE);
-        buffering.setVisibility(View.VISIBLE);
+        if (buffering.getVisibility() != View.VISIBLE) buffering.setVisibility(View.VISIBLE);
     }
 
     private void hideBuffering() {
