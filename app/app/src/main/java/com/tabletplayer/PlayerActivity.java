@@ -1,9 +1,5 @@
 package com.tabletplayer;
 
-import android.content.BroadcastReceiver;
-import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.media.AudioManager;
 import android.net.Uri;
@@ -13,7 +9,6 @@ import android.os.Looper;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.view.GestureDetector;
-import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -128,36 +123,7 @@ public class PlayerActivity extends AppCompatActivity {
     private boolean prefetchStartedForCurrent = false;
     private boolean cacheSessionReleased = false;
     private final Set<String> directOnlyThisSession = new HashSet<>();
-    private boolean audioRouteReceiverRegistered = false;
-    private boolean wiredHeadsetConnected = false;
     private long lastTechnicalCardUpdateMs = 0L;
-
-    /**
-     * ACTION_AUDIO_BECOMING_NOISY отправляется системой перед переводом звука
-     * с Bluetooth/проводных наушников на динамик. Это основной и наиболее
-     * совместимый с Android 4.4 сигнал, не требующий Bluetooth-разрешений.
-     */
-    private final BroadcastReceiver audioRouteReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (intent == null) return;
-            String action = intent.getAction();
-            if (AudioManager.ACTION_AUDIO_BECOMING_NOISY.equals(action)) {
-                pauseBecauseHeadphonesDisconnected("Наушники отключены");
-                return;
-            }
-            if (Intent.ACTION_HEADSET_PLUG.equals(action)) {
-                int state = intent.getIntExtra("state", -1);
-                if (state == 1) {
-                    wiredHeadsetConnected = true;
-                } else if (state == 0) {
-                    boolean wasConnected = wiredHeadsetConnected;
-                    wiredHeadsetConnected = false;
-                    if (wasConnected) pauseBecauseHeadphonesDisconnected("Проводные наушники отключены");
-                }
-            }
-        }
-    };
 
     private final float[] speeds = {1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f};
     private int speedIdx = 0;
@@ -172,10 +138,6 @@ public class PlayerActivity extends AppCompatActivity {
 
     private MediaSessionCompat session;
     private AudioManager audioManager;
-    // Команда пользователя хранится отдельно от player.isPlaying(): libVLC меняет
-    // фактическое состояние асинхронно, из-за чего MediaSession раньше оставалась
-    // в STATE_PLAYING после паузы и второе нажатие гарнитуры снова посылало Pause.
-    private boolean playbackRequested = false;
     private int lastSessionState = Integer.MIN_VALUE;
     private long lastSessionPositionSecond = Long.MIN_VALUE;
     private int lastSessionSpeedBits = Integer.MIN_VALUE;
@@ -183,7 +145,7 @@ public class PlayerActivity extends AppCompatActivity {
     private long lastDisplayedDurationSecond = Long.MIN_VALUE;
     private final AudioManager.OnAudioFocusChangeListener focusListener = focus -> {
         if (focus == AudioManager.AUDIOFOCUS_LOSS || focus == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT) {
-            if (playbackRequested || (player != null && player.isPlaying())) setPlaying(false);
+            if (player != null && player.isPlaying()) setPlaying(false);
         }
     };
 
@@ -388,15 +350,6 @@ public class PlayerActivity extends AppCompatActivity {
         }
         switch (type) {
             case MediaPlayer.Event.Playing:
-                // play() запускается асинхронно. Если пользователь успел нажать
-                // Bluetooth-паузу во время подготовки, останавливаем только что
-                // стартовавший источник вместо самопроизвольного продолжения.
-                if (!playbackRequested) {
-                    try { player.pause(); } catch (Throwable ignored) {}
-                    updatePlayIcon();
-                    updatePlaybackState();
-                    break;
-                }
                 if (sourceMode == SOURCE_CACHE_LOCAL) localStartObserved = true;
                 reconnectAttempts = 0;
                 reconnecting = false;
@@ -462,144 +415,57 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void setupSession() {
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
-        requestAudioFocusForPlayback();
+        if (audioManager != null) {
+            audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+        }
         try {
-            session = new MediaSessionCompat(this, "TabletPlayer");
-            session.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
-                    | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
-            session.setCallback(new MediaSessionCompat.Callback() {
-                @Override
-                public boolean onMediaButtonEvent(Intent mediaButtonIntent) {
-                    if (mediaButtonIntent == null) return false;
-                    KeyEvent event = mediaButtonIntent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
-                    if (event == null) return false;
+        session = new MediaSessionCompat(this, "TabletPlayer");
+        session.setCallback(new MediaSessionCompat.Callback() {
+            @Override
+            public void onPlay() {
+                setPlaying(true);
+            }
 
-                    // Поглощаем и DOWN, и UP, но действие выполняем только один раз.
-                    if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) {
-                        return true;
-                    }
-                    switch (event.getKeyCode()) {
-                        case KeyEvent.KEYCODE_HEADSETHOOK:
-                        case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
-                            togglePlay();
-                            return true;
-                        case KeyEvent.KEYCODE_MEDIA_PLAY:
-                            setPlaying(true);
-                            return true;
-                        case KeyEvent.KEYCODE_MEDIA_PAUSE:
-                            setPlaying(false);
-                            return true;
-                        case KeyEvent.KEYCODE_MEDIA_NEXT:
-                            playNext();
-                            return true;
-                        case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
-                            playPrev();
-                            return true;
-                        case KeyEvent.KEYCODE_MEDIA_STOP:
-                            finish();
-                            return true;
-                        default:
-                            return super.onMediaButtonEvent(mediaButtonIntent);
-                    }
-                }
+            @Override
+            public void onPause() {
+                setPlaying(false);
+            }
 
-                @Override
-                public void onPlay() {
-                    setPlaying(true);
-                }
+            @Override
+            public void onSkipToNext() {
+                playNext();
+            }
 
-                @Override
-                public void onPause() {
-                    setPlaying(false);
-                }
+            @Override
+            public void onSkipToPrevious() {
+                playPrev();
+            }
 
-                @Override
-                public void onSkipToNext() {
-                    playNext();
-                }
-
-                @Override
-                public void onSkipToPrevious() {
-                    playPrev();
-                }
-
-                @Override
-                public void onStop() {
-                    finish();
-                }
-            }, ui);
-            session.setActive(true);
-            updatePlaybackState();
+            @Override
+            public void onStop() {
+                finish();
+            }
+        });
+        session.setActive(true);
         } catch (Throwable e) {
             session = null;
         }
     }
 
-    private void requestAudioFocusForPlayback() {
-        if (audioManager != null) {
-            try {
-                audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC,
-                        AudioManager.AUDIOFOCUS_GAIN);
-            } catch (Throwable ignored) {
-            }
-        }
-    }
 
-    private void registerAudioRouteReceiver() {
-        if (audioRouteReceiverRegistered) return;
-        try {
-            if (audioManager != null) wiredHeadsetConnected = audioManager.isWiredHeadsetOn();
-            IntentFilter filter = new IntentFilter();
-            filter.addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
-            filter.addAction(Intent.ACTION_HEADSET_PLUG);
-            registerReceiver(audioRouteReceiver, filter);
-            audioRouteReceiverRegistered = true;
-            PlaybackDiagnostics.log(this, "audio route receiver registered wired="
-                    + wiredHeadsetConnected);
-        } catch (Throwable e) {
-            PlaybackDiagnostics.log(this, "audio route receiver register failed: " + e);
-        }
-    }
 
-    private void unregisterAudioRouteReceiver() {
-        if (!audioRouteReceiverRegistered) return;
-        try {
-            unregisterReceiver(audioRouteReceiver);
-        } catch (Throwable ignored) {
-        } finally {
-            audioRouteReceiverRegistered = false;
-        }
-    }
 
-    private void pauseBecauseHeadphonesDisconnected(String reason) {
-        boolean actuallyPlaying = playbackRequested;
-        if (!actuallyPlaying && player != null) {
-            try { actuallyPlaying = player.isPlaying(); } catch (Throwable ignored) {}
-        }
-        if (destroyed || !actuallyPlaying) return;
-        PlaybackDiagnostics.log(this, "audio route lost: " + reason);
-        setPlaying(false);
-        saveCurrentPosition(true);
-        flashInfo(reason + "\nВоспроизведение приостановлено");
-        showControls();
-    }
 
     private void updatePlaybackState() {
         if (session == null) return;
         long pos = player != null ? Math.max(0L, player.getTime()) : Math.max(0L, currentMs);
-        int state;
-        float stateSpeed;
-        if (sourceMode == SOURCE_CACHE_PREPARING || playbackState == STATE_PREPARING
-                || playbackState == STATE_STARTING) {
-            state = PlaybackStateCompat.STATE_BUFFERING;
-            stateSpeed = 0f;
-        } else if (playbackRequested) {
-            state = PlaybackStateCompat.STATE_PLAYING;
-            stateSpeed = speeds[speedIdx];
-        } else {
-            state = PlaybackStateCompat.STATE_PAUSED;
-            stateSpeed = 0f;
+        boolean playingNow = false;
+        if (player != null) {
+            try { playingNow = player.isPlaying(); } catch (Throwable ignored) {}
         }
+        int state = playingNow
+                ? PlaybackStateCompat.STATE_PLAYING : PlaybackStateCompat.STATE_PAUSED;
+        float stateSpeed = playingNow ? speeds[speedIdx] : 0f;
         long positionSecond = pos / 1000L;
         int speedBits = Float.floatToIntBits(stateSpeed);
         if (state == lastSessionState && positionSecond == lastSessionPositionSecond
@@ -731,12 +597,8 @@ public class PlayerActivity extends AppCompatActivity {
         Media media = buildMedia(uri, network, localSource);
         player.setMedia(media);
         media.release();
-        playbackRequested = true;
-        requestAudioFocusForPlayback();
         player.play();
         player.setRate(speeds[speedIdx]);
-        updatePlayIcon();
-        updatePlaybackState();
         PlaybackDiagnostics.log(this, "start gen=" + generation + " mode=" + sourceMode
                 + " sw=" + forceSoftwareDecoder + " source="
                 + (localSource ? "cache" : (network ? "network" : "file")));
@@ -926,9 +788,6 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void handleEnd() {
-        playbackRequested = false;
-        updatePlayIcon();
-        updatePlaybackState();
         if (local) {
             currentCompleted = true;
             Store.clearPos(this, path);
@@ -1194,28 +1053,9 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void setPlaying(boolean play) {
-        if (destroyed) return;
-        playbackRequested = play;
-        PlaybackDiagnostics.log(this, "transport requested=" + (play ? "play" : "pause")
-                + " state=" + playbackState + " mode=" + sourceMode);
-        MediaPlayer current = player;
-        if (current != null) {
-            try {
-                if (play) {
-                    requestAudioFocusForPlayback();
-                    // play() безопасно возобновляет paused MediaPlayer. Не проверяем
-                    // isPlaying(), так как после Bluetooth-паузы это значение может
-                    // ещё несколько мгновений оставаться устаревшим.
-                    current.play();
-                    current.setRate(speeds[speedIdx]);
-                } else if (current.isPlaying()) {
-                    current.pause();
-                }
-            } catch (Throwable e) {
-                PlaybackDiagnostics.log(this, "transport " + (play ? "play" : "pause")
-                        + " failed: " + e);
-            }
-        }
+        if (player == null) return;
+        if (play && !player.isPlaying()) player.play();
+        else if (!play && player.isPlaying()) player.pause();
         updatePlayIcon();
         updatePlaybackState();
     }
@@ -1225,11 +1065,11 @@ public class PlayerActivity extends AppCompatActivity {
             flashInfo("Подготовка серии…");
             return;
         }
-        if (player != null) setPlaying(!playbackRequested);
+        if (player != null) setPlaying(!player.isPlaying());
     }
 
     private void updatePlayIcon() {
-        playPause.setImageResource(player != null && playbackRequested
+        playPause.setImageResource(player != null && player.isPlaying()
                 ? R.drawable.ic_pause : R.drawable.ic_play);
     }
 
@@ -1660,7 +1500,6 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
-        registerAudioRouteReceiver();
         if (player != null && viewsDetached) {
             try {
                 player.attachViews(videoLayout, null, false, false);
@@ -1678,11 +1517,10 @@ public class PlayerActivity extends AppCompatActivity {
 
     @Override
     protected void onStop() {
-        unregisterAudioRouteReceiver();
         ui.removeCallbacks(ticker);
         saveCurrentPosition(true);
         if (player != null) {
-            if (playbackRequested || player.isPlaying()) setPlaying(false);
+            if (player.isPlaying()) setPlaying(false);
             try {
                 player.detachViews();
                 viewsDetached = true;
@@ -1703,8 +1541,6 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     public void onBackPressed() {
         saveCurrentPosition(true);
-        playbackRequested = false;
-        updatePlaybackState();
         playbackState = STATE_STOPPING;
         releasePlayerForTransition();
         stopPlaybackCache(true);
@@ -1718,13 +1554,11 @@ public class PlayerActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
-        unregisterAudioRouteReceiver();
         destroyed = true;
         playbackState = STATE_DESTROYED;
         ui.removeCallbacksAndMessages(null);
         if (session != null) session.release();
         if (audioManager != null) audioManager.abandonAudioFocus(focusListener);
-        playbackRequested = false;
         releasePlayerForTransition();
         stopPlaybackCache(true);
         if (queuePrefetcher != null) {
