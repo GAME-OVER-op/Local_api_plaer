@@ -108,16 +108,20 @@ public final class PlaybackProxyServer implements AutoCloseable {
             long end = range.end >= 0 ? range.end : (total > 0 ? total - 1 : Long.MAX_VALUE - 1);
             if (start < 0) start = 0;
             if (total > 0 && end >= total) end = total - 1;
-            long need = end == Long.MAX_VALUE - 1 ? start + 1 : end + 1;
-            source.waitForBytes(need, 30000L);
+            long firstNeed = start + 1;
+            source.waitForBytes(firstNeed, 30000L);
 
             long available = source.availableBytes();
             if (available <= start) {
                 writeStatus(416, "Range Not Satisfiable", 0, null);
                 return;
             }
-            if (end >= available) end = available - 1;
-            long length = end - start + 1;
+            long length;
+            if (end == Long.MAX_VALUE - 1) {
+                length = Math.max(1, available - start);
+            } else {
+                length = end - start + 1;
+            }
             String contentRange = null;
             int code = range.requested ? 206 : 200;
             String status = range.requested ? "Partial Content" : "OK";
@@ -147,13 +151,19 @@ public final class PlaybackProxyServer implements AutoCloseable {
             try {
                 raf.seek(start);
                 byte[] buf = new byte[64 * 1024];
-                long left = length;
-                while (left > 0 && running) {
-                    int want = (int) Math.min(buf.length, left);
+                long sent = 0;
+                while (sent < length && running) {
+                    long absolute = start + sent;
+                    int want = (int) Math.min(buf.length, length - sent);
+                    source.waitForBytes(absolute + want, 30000L);
                     int r = raf.read(buf, 0, want);
-                    if (r < 0) break;
+                    if (r < 0) {
+                        if (source.complete()) break;
+                        Thread.sleep(120L);
+                        continue;
+                    }
                     out.write(buf, 0, r);
-                    left -= r;
+                    sent += r;
                 }
                 out.flush();
             } finally {

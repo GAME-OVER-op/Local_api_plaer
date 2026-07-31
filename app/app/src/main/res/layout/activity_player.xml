@@ -68,6 +68,24 @@
     </LinearLayout>
 
     <TextView
+        android:id="@+id/cache_badge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|right"
+        android:layout_marginTop="18dp"
+        android:layout_marginRight="18dp"
+        android:background="@drawable/overlay_bg"
+        android:paddingLeft="10dp"
+        android:paddingRight="10dp"
+        android:paddingTop="5dp"
+        android:paddingBottom="5dp"
+        android:text="↓ 0%"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <TextView
         android:id="@+id/gesture_info"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -115,7 +133,10 @@
                 android:layout_weight="1"
                 android:layout_marginLeft="10dp"
                 android:layout_marginRight="10dp"
-                android:max="1000" />
+                android:max="1000"
+                android:minHeight="2dp"
+                android:maxHeight="2dp"
+                android:progressDrawable="@drawable/seek_progress_thin" />
         </LinearLayout>
 
         <HorizontalScrollView
