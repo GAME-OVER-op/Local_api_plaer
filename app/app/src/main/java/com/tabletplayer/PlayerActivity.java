@@ -769,6 +769,8 @@ public class PlayerActivity extends AppCompatActivity {
             long extra = 32L * 1024L * 1024L;
             if (!cacheTask.hasBytesForTime(targetMs, duration, extra)) {
                 cacheSeekWaitMs = targetMs;
+                long seekByte = cacheTask.bytesForTime(targetMs, duration);
+                cacheTask.requestSeekWindow(seekByte, extra);
                 setPlaying(false);
                 player.setTime(targetMs);
                 showBuffering("Ожидание кэша: " + cacheProgressLine(cacheTask, false) + " · переход " + Util.fmtTime(targetMs));
@@ -793,7 +795,9 @@ public class PlayerActivity extends AppCompatActivity {
             seek.setSecondaryProgress(progress);
         }
         if (cacheSeekWaitMs > 0) {
-            boolean ready = cacheTask.hasBytesForTime(cacheSeekWaitMs, duration, 32L * 1024L * 1024L);
+            long seekExtra = 32L * 1024L * 1024L;
+            cacheTask.requestSeekWindow(cacheTask.bytesForTime(cacheSeekWaitMs, duration), seekExtra);
+            boolean ready = cacheTask.hasBytesForTime(cacheSeekWaitMs, duration, seekExtra);
             if (ready) {
                 long target = cacheSeekWaitMs;
                 cacheSeekWaitMs = 0;

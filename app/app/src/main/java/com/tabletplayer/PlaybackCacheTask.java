@@ -10,18 +10,14 @@ import java.net.URL;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Range-загрузчик для локального playback-cache.
+ * Оконный Range-загрузчик для локального playback-cache.
  *
- * Важное разделение:
- * - cachedBytes — сколько скачано суммарно всеми потоками;
- * - downloadedBytes/availableBytes — сколько байт непрерывно доступно от начала файла.
- *
- * Локальный proxy и libVLC видят только непрерывный участок, поэтому даже при
- * многопоточном скачивании файл не отдаётся с дырками.
+ * Он не раскладывает весь файл в очередь сразу:
+ * - до запуска планирует только подготовочную область 0..30%/300 МБ;
+ * - после запуска держит скользящее окно вперёд;
+ * - после seek в незагруженную область создаёт срочное окно от новой позиции.
  */
 public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, AutoCloseable {
     public interface Listener {
@@ -36,11 +32,17 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     public static final long START_PERCENT_LIMIT = 30L;
     public static final long START_MAX_BYTES = 300L * MB;
     public static final long MIN_EARLY_START_BYTES = 64L * MB;
-    private static final long PREPARE_TIMEOUT_MS = 30000L;
+    private static final long PREPARE_SOFT_TIMEOUT_MS = 30000L;
+    private static final long PREPARE_HARD_TIMEOUT_MS = 120000L;
     private static final long SPEED_SAMPLE_WINDOW_MS = 8000L;
     private static final long MIN_EARLY_SPEED_BYTES_PER_SEC = 1536L * 1024L;
+    private static final long MIN_KEEP_WAIT_SPEED_BYTES_PER_SEC = 512L * 1024L;
     private static final int BUFFER_SIZE = 256 * 1024;
     private static final int MAX_CHUNK_RETRIES = 3;
+
+    private static final int CHUNK_PENDING = 0;
+    private static final int CHUNK_IN_FLIGHT = 1;
+    private static final int CHUNK_DONE = 2;
 
     private final Context context;
     private final PlaybackCacheManager.Entry entry;
@@ -49,6 +51,8 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private final Object lock = new Object();
     private final ArrayDeque<Sample> samples = new ArrayDeque<>();
     private final List<HttpURLConnection> activeConnections = new ArrayList<>();
+    private final ArrayList<Chunk> chunks = new ArrayList<>();
+    private final ArrayDeque<Chunk> pendingChunks = new ArrayDeque<>();
 
     private volatile boolean cancelled;
     private volatile boolean complete;
@@ -60,10 +64,10 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     private long startAtMs;
     private long lastProgressNotifyMs;
-    private boolean[] chunkDone;
-    private long[] chunkStart;
-    private long[] chunkEnd;
-    private int contiguousChunkIndex;
+    private long chunkSize;
+    private long scheduledUntilBytes;
+    private long seekFocusStartBytes = -1;
+    private long seekFocusScheduledUntilBytes = -1;
 
     public PlaybackCacheTask(Context context, PlaybackCacheManager.Entry entry, boolean prefetch, Listener listener) {
         this.context = context.getApplicationContext();
@@ -76,14 +80,14 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         return entry;
     }
 
-    /** Непрерывно доступно от начала файла. */
+    /** Непрерывно доступно от начала файла. Для обычного старта и secondaryProgress. */
     public long downloadedBytes() {
         synchronized (lock) {
             return entry.downloadedBytes;
         }
     }
 
-    /** Скачано суммарно всеми Range-потоками. Может быть больше downloadedBytes(). */
+    /** Скачано суммарно, включая окна после seek. Может быть больше downloadedBytes(). */
     public long cachedBytes() {
         synchronized (lock) {
             return Math.max(entry.cachedBytes, entry.downloadedBytes);
@@ -116,8 +120,11 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     }
 
     public int workerCount() {
-        if (prefetch) return Store.getPlaybackPrefetchThreads(context);
-        return Store.getPlaybackCacheThreads(context);
+        long total = totalBytes();
+        int cap = prefetch ? Store.getPlaybackPrefetchThreads(context) : Store.getPlaybackCacheThreads(context);
+        int auto = prefetch ? Math.min(cap, 3) : autoWorkerCount(total);
+        if (!prefetch) return Math.max(3, Math.min(cap, auto));
+        return Math.max(1, Math.min(cap, auto));
     }
 
     public long prepareTargetBytes() {
@@ -156,9 +163,29 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     public boolean hasBytesForTime(long ms, long durationMs, long extraBytes) {
         long total = totalBytes();
         if (total <= 0 || durationMs <= 0) return true;
-        long need = bytesForTime(ms, durationMs) + Math.max(0, extraBytes);
-        if (need > total) need = total;
-        return downloadedBytes() >= need;
+        long start = bytesForTime(ms, durationMs);
+        long end = Math.min(total - 1L, start + Math.max(1L, extraBytes) - 1L);
+        return isRangeAvailable(start, end);
+    }
+
+    /** Срочно планирует окно загрузки от позиции перемотки, не добивая путь до неё. */
+    public void requestSeekWindow(long startByte, long minAheadBytes) {
+        long total = totalBytes();
+        if (total <= 0) return;
+        long s = Math.max(0, Math.min(total - 1L, startByte));
+        long ahead = Math.max(Math.max(minAheadBytes, seekInitialWindowBytes(total)), chunkSizeFor(total));
+        synchronized (lock) {
+            seekFocusStartBytes = s;
+            seekFocusScheduledUntilBytes = s;
+            long urgentEnd = Math.min(total, s + ahead);
+            if (s > entry.downloadedBytes + playbackWindowBytes(total) / 2L) {
+                dropPendingChunksOutsideLocked(s, urgentEnd);
+            }
+            scheduleRangeLocked(s, urgentEnd, true);
+            lock.notifyAll();
+        }
+        PlayerDiagnostics.log(context, "cache-seek-window", "start=" + s + " ahead=" + ahead + " total=" + total);
+        maybeNotifyProgress();
     }
 
     public long recentSpeedBytesPerSec() {
@@ -202,10 +229,16 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
                 entry.totalBytes = total;
                 entry.downloadedBytes = 0;
                 entry.cachedBytes = 0;
+                chunks.clear();
+                pendingChunks.clear();
+                chunkSize = chunkSizeFor(total);
+                scheduledUntilBytes = 0;
+                seekFocusStartBytes = -1;
+                seekFocusScheduledUntilBytes = -1;
                 addSampleLocked(0);
             }
-            PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "total=" + total + " target=" + prepareTargetBytes() + " workers=" + workerCount() + " max=" + TransferCoordinator.get().maxRemoteTransfers());
-            downloadParallel(total);
+            PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "total=" + total + " target=" + prepareTargetBytes() + " chunk=" + chunkSizeFor(total) + " workers=" + workerCount() + " max=" + TransferCoordinator.get().maxRemoteTransfers());
+            downloadWindowed(total);
         } catch (Exception e) {
             error = e;
             PlayerDiagnostics.log(context, prefetch ? "prefetch-error" : "cache-error", e);
@@ -252,8 +285,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         }
     }
 
-    private void downloadParallel(long total) throws Exception {
-        prepareChunkTable(total);
+    private void downloadWindowed(long total) throws Exception {
         if (entry.partFile.exists()) entry.partFile.delete();
         RandomAccessFile init = new RandomAccessFile(entry.partFile, "rw");
         try {
@@ -262,16 +294,22 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             init.close();
         }
 
-        int workers = Math.max(1, Math.min(workerCount(), chunkDone.length));
-        final AtomicInteger nextChunk = new AtomicInteger(0);
-        final AtomicBoolean workerFailed = new AtomicBoolean(false);
+        synchronized (lock) {
+            if (prefetch) {
+                scheduleRangeLocked(0, total, false);
+            } else {
+                scheduleRangeLocked(0, Math.min(total, prepareTargetBytes()), false);
+            }
+        }
+
+        int workers = Math.max(1, workerCount());
         ArrayList<Thread> threads = new ArrayList<>();
         for (int i = 0; i < workers; i++) {
             final int workerIndex = i;
             Thread t = new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    runWorker(total, nextChunk, workerFailed, workerIndex);
+                    runWorker(total, workerIndex);
                 }
             }, (prefetch ? "PrefetchRange-" : "CacheRange-") + i);
             t.setDaemon(true);
@@ -280,8 +318,12 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             t.start();
         }
 
-        for (Thread t : threads) {
-            while (t.isAlive()) {
+        boolean anyAlive;
+        do {
+            anyAlive = false;
+            for (Thread t : threads) {
+                if (!t.isAlive()) continue;
+                anyAlive = true;
                 try {
                     t.join(1000L);
                 } catch (InterruptedException e) {
@@ -296,32 +338,36 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
                 }
                 if (cancelled || error != null) break;
             }
-        }
+        } while (anyAlive && !cancelled && error == null);
 
         if (error != null) throw error;
-        if (!cancelled && allChunksComplete()) completeFile(total);
+        if (!cancelled && entry.downloadedBytes >= total) completeFile(total);
     }
 
-    private void runWorker(long total, AtomicInteger nextChunk, AtomicBoolean workerFailed, int workerIndex) {
-        while (!cancelled && error == null && !workerFailed.get()) {
-            int idx = nextChunk.getAndIncrement();
-            if (idx >= chunkDone.length) return;
+    private void runWorker(long total, int workerIndex) {
+        while (!cancelled && error == null) {
+            Chunk chunk = takeNextChunk(total);
+            if (chunk == null) return;
             boolean ok = false;
             Exception last = null;
             for (int attempt = 1; attempt <= MAX_CHUNK_RETRIES && !cancelled; attempt++) {
                 try {
-                    downloadChunk(idx, chunkStart[idx], chunkEnd[idx]);
+                    downloadChunk(chunk);
                     ok = true;
                     break;
                 } catch (Exception e) {
                     last = e;
-                    PlayerDiagnostics.log(context, prefetch ? "prefetch-retry" : "cache-retry", "worker=" + workerIndex + " chunk=" + idx + " attempt=" + attempt + " err=" + e.getMessage());
+                    PlayerDiagnostics.log(context, prefetch ? "prefetch-retry" : "cache-retry", "worker=" + workerIndex + " range=" + chunk.start + "-" + chunk.end + " attempt=" + attempt + " err=" + e.getMessage());
                     try { Thread.sleep(200L * attempt); } catch (InterruptedException ignored) { break; }
                 }
             }
             if (!ok && !cancelled) {
+                synchronized (lock) {
+                    if (chunk.state != CHUNK_DONE) chunk.state = CHUNK_PENDING;
+                    pendingChunks.addFirst(chunk);
+                    lock.notifyAll();
+                }
                 error = last == null ? new RuntimeException("chunk failed") : last;
-                workerFailed.set(true);
                 cancelled = true;
                 disconnectAll();
                 synchronized (lock) {
@@ -332,7 +378,32 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         }
     }
 
-    private void downloadChunk(int idx, long start, long end) throws Exception {
+    private Chunk takeNextChunk(long total) {
+        synchronized (lock) {
+            while (!cancelled && error == null) {
+                maybeScheduleWindowLocked(total);
+                Chunk c = pendingChunks.pollFirst();
+                if (c != null) {
+                    if (c.state == CHUNK_PENDING) {
+                        c.state = CHUNK_IN_FLIGHT;
+                        return c;
+                    }
+                    continue;
+                }
+                if (entry.downloadedBytes >= total) return null;
+                if (prefetch && scheduledUntilBytes >= total && !hasInFlightLocked() && !hasPendingLocked()) return null;
+                try {
+                    lock.wait(500L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+            }
+            return null;
+        }
+    }
+
+    private void downloadChunk(Chunk chunk) throws Exception {
         TransferCoordinator.Lease l = null;
         HttpURLConnection c = null;
         InputStream in = null;
@@ -342,24 +413,24 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             c = (HttpURLConnection) new URL(entry.base + "/download?path=" + Util.enc(entry.path)).openConnection();
             registerConnection(c);
             App.auth(c, context);
-            c.setRequestProperty("Range", "bytes=" + start + "-" + end);
+            c.setRequestProperty("Range", "bytes=" + chunk.start + "-" + chunk.end);
             c.setConnectTimeout(10000);
             c.setReadTimeout(40000);
             int code = c.getResponseCode();
-            if (code != 206) throw new RuntimeException("HTTP " + code + " for range " + start + "-" + end);
+            if (code != 206) throw new RuntimeException("HTTP " + code + " for range " + chunk.start + "-" + chunk.end);
             in = c.getInputStream();
             out = new RandomAccessFile(entry.partFile, "rw");
-            out.seek(start);
+            out.seek(chunk.start);
             byte[] buf = new byte[BUFFER_SIZE];
-            long pos = start;
+            long pos = chunk.start;
             int read;
-            while (!cancelled && pos <= end && (read = in.read(buf, 0, (int) Math.min(buf.length, end - pos + 1))) != -1) {
+            while (!cancelled && pos <= chunk.end && (read = in.read(buf, 0, (int) Math.min(buf.length, chunk.end - pos + 1))) != -1) {
                 out.write(buf, 0, read);
                 pos += read;
             }
             if (cancelled) return;
-            if (pos <= end) throw new RuntimeException("short range " + start + "-" + end + " got=" + (pos - start));
-            markChunkComplete(idx);
+            if (pos <= chunk.end) throw new RuntimeException("short range " + chunk.start + "-" + chunk.end + " got=" + (pos - chunk.start));
+            markChunkComplete(chunk);
         } finally {
             if (in != null) try { in.close(); } catch (Exception ignored) {}
             if (out != null) try { out.close(); } catch (Exception ignored) {}
@@ -371,56 +442,89 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         }
     }
 
-    private void prepareChunkTable(long total) {
-        long chunkSize = chooseChunkSize(total);
-        int count = (int) ((total + chunkSize - 1L) / chunkSize);
-        if (count < 1) count = 1;
-        chunkDone = new boolean[count];
-        chunkStart = new long[count];
-        chunkEnd = new long[count];
-        for (int i = 0; i < count; i++) {
-            long s = i * chunkSize;
-            long e = Math.min(total - 1L, s + chunkSize - 1L);
-            chunkStart[i] = s;
-            chunkEnd[i] = e;
+    private void scheduleRangeLocked(long start, long endExclusive, boolean priority) {
+        long total = entry.totalBytes;
+        if (total <= 0 || cancelled) return;
+        long size = chunkSize > 0 ? chunkSize : chunkSizeFor(total);
+        long s = Math.max(0, Math.min(total, start));
+        long end = Math.max(s, Math.min(total, endExclusive));
+        if (end <= s) return;
+        long aligned = (s / size) * size;
+        for (long p = aligned; p < end; p += size) {
+            long e = Math.min(total - 1L, p + size - 1L);
+            Chunk existing = findChunkByStartLocked(p);
+            if (existing != null) continue;
+            Chunk c = new Chunk(p, e);
+            chunks.add(c);
+            if (priority) pendingChunks.addFirst(c);
+            else pendingChunks.addLast(c);
         }
-        contiguousChunkIndex = 0;
+        if (!priority && end > scheduledUntilBytes) scheduledUntilBytes = end;
+        if (priority && end > seekFocusScheduledUntilBytes) seekFocusScheduledUntilBytes = end;
+        lock.notifyAll();
     }
 
-    private static long chooseChunkSize(long total) {
-        if (total <= 256L * MB) return 4L * MB;
-        if (total <= 1024L * MB) return 8L * MB;
-        if (total <= 4L * 1024L * MB) return 16L * MB;
-        return 32L * MB;
+
+    private void dropPendingChunksOutsideLocked(long start, long endExclusive) {
+        java.util.Iterator<Chunk> pit = pendingChunks.iterator();
+        while (pit.hasNext()) {
+            Chunk c = pit.next();
+            if (c.state != CHUNK_PENDING) continue;
+            if (c.end < start || c.start >= endExclusive) pit.remove();
+        }
+        for (int i = chunks.size() - 1; i >= 0; i--) {
+            Chunk c = chunks.get(i);
+            if (c.state != CHUNK_PENDING) continue;
+            if (c.end < start || c.start >= endExclusive) chunks.remove(i);
+        }
     }
 
-    private void markChunkComplete(int idx) {
+    private void maybeScheduleWindowLocked(long total) {
+        if (total <= 0 || cancelled) return;
+        if (prefetch) {
+            if (scheduledUntilBytes < total) scheduleRangeLocked(scheduledUntilBytes, total, false);
+            return;
+        }
+        long prepareEnd = Math.min(total, prepareTargetBytes());
+        if (!readyNotified) {
+            if (scheduledUntilBytes < prepareEnd) scheduleRangeLocked(scheduledUntilBytes, prepareEnd, false);
+            return;
+        }
+
+        long window = playbackWindowBytes(total);
+        if (seekFocusStartBytes >= 0) {
+            long focusEnd = contiguousEndFromLocked(seekFocusStartBytes);
+            long base = Math.max(Math.max(focusEnd, seekFocusScheduledUntilBytes), seekFocusStartBytes);
+            long wanted = Math.min(total, base + window);
+            if (seekFocusScheduledUntilBytes < wanted) {
+                scheduleRangeLocked(seekFocusScheduledUntilBytes, wanted, true);
+            }
+            // После дальнего seek не продолжаем грузить старый путь до новой позиции.
+            if (seekFocusStartBytes > entry.downloadedBytes + window) return;
+        }
+
+        long base = Math.max(entry.downloadedBytes, scheduledUntilBytes);
+        long wanted = Math.min(total, base + window);
+        if (scheduledUntilBytes < wanted) scheduleRangeLocked(scheduledUntilBytes, wanted, false);
+    }
+
+    private void markChunkComplete(Chunk chunk) {
         synchronized (lock) {
-            if (chunkDone == null || idx < 0 || idx >= chunkDone.length || chunkDone[idx]) return;
-            chunkDone[idx] = true;
-            long cached = entry.cachedBytes + (chunkEnd[idx] - chunkStart[idx] + 1L);
+            if (chunk.state == CHUNK_DONE) return;
+            chunk.state = CHUNK_DONE;
+            long cached = entry.cachedBytes + chunk.length();
             if (cached > entry.totalBytes && entry.totalBytes > 0) cached = entry.totalBytes;
             entry.cachedBytes = cached;
-            while (contiguousChunkIndex < chunkDone.length && chunkDone[contiguousChunkIndex]) {
-                entry.downloadedBytes = chunkEnd[contiguousChunkIndex] + 1L;
-                contiguousChunkIndex++;
-            }
+            entry.downloadedBytes = contiguousEndFromLocked(0);
             if (entry.totalBytes > 0 && entry.downloadedBytes > entry.totalBytes) entry.downloadedBytes = entry.totalBytes;
             addSampleLocked(entry.cachedBytes);
+            maybeScheduleWindowLocked(entry.totalBytes);
             lock.notifyAll();
         }
         maybeNotifyProgress();
         if (!prefetch) {
             maybeNotifyReady();
             maybeTimeoutFallback();
-        }
-    }
-
-    private boolean allChunksComplete() {
-        synchronized (lock) {
-            if (chunkDone == null) return false;
-            for (boolean b : chunkDone) if (!b) return false;
-            return true;
         }
     }
 
@@ -453,17 +557,22 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         long available = downloadedBytes();
         long target = prepareTargetBytes();
         long elapsed = System.currentTimeMillis() - startAtMs;
+        long speed = recentSpeedBytesPerSec();
         boolean targetReached = target > 0 && available >= target;
         boolean early = available >= MIN_EARLY_START_BYTES
                 && elapsed >= 5000L
-                && recentSpeedBytesPerSec() >= MIN_EARLY_SPEED_BYTES_PER_SEC;
-        boolean timeoutButUsable = elapsed >= PREPARE_TIMEOUT_MS
+                && speed >= MIN_EARLY_SPEED_BYTES_PER_SEC;
+        boolean timeoutButUsable = elapsed >= PREPARE_SOFT_TIMEOUT_MS
                 && available >= MIN_EARLY_START_BYTES
-                && recentSpeedBytesPerSec() >= 1024L * 1024L;
+                && speed >= MIN_KEEP_WAIT_SPEED_BYTES_PER_SEC;
         if (targetReached || early || timeoutButUsable) {
             readyNotified = true;
-            PlayerDiagnostics.log(context, "cache", "ready early=" + (!targetReached) + " available=" + available + " cached=" + cachedBytes() + " target=" + target + " speed=" + recentSpeedBytesPerSec());
+            PlayerDiagnostics.log(context, "cache", "ready early=" + (!targetReached) + " available=" + available + " cached=" + cachedBytes() + " target=" + target + " speed=" + speed);
             PlaybackCacheManager.get().markState(entry, PlaybackCacheManager.State.PLAYING);
+            synchronized (lock) {
+                maybeScheduleWindowLocked(entry.totalBytes);
+                lock.notifyAll();
+            }
             if (listener != null) listener.onCacheReady(this, !targetReached);
         }
     }
@@ -471,8 +580,13 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private void maybeTimeoutFallback() {
         if (readyNotified || fallbackNotified || cancelled) return;
         long elapsed = System.currentTimeMillis() - startAtMs;
-        if (elapsed < PREPARE_TIMEOUT_MS) return;
-        notifyFallback("подготовка не успела за 30 секунд");
+        if (elapsed < PREPARE_SOFT_TIMEOUT_MS) return;
+        long speed = recentSpeedBytesPerSec();
+        long available = downloadedBytes();
+        long cached = cachedBytes();
+        if (speed >= MIN_KEEP_WAIT_SPEED_BYTES_PER_SEC && cached > 0) return;
+        if (elapsed < PREPARE_HARD_TIMEOUT_MS && (available >= 8L * MB || cached >= 16L * MB)) return;
+        notifyFallback("подготовка не продвигается: скорость низкая или нет непрерывного кэша");
     }
 
     private void notifyFallback(String reason) {
@@ -499,14 +613,32 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     @Override
     public boolean waitForBytes(long bytes, long timeoutMs) throws InterruptedException {
+        if (bytes <= 0) return true;
+        return waitForRange(0, bytes - 1L, timeoutMs);
+    }
+
+    @Override
+    public boolean waitForRange(long start, long endInclusive, long timeoutMs) throws InterruptedException {
+        long total = totalBytes();
+        if (total <= 0) return false;
+        long s = Math.max(0, Math.min(total - 1L, start));
+        long e = Math.max(s, Math.min(total - 1L, endInclusive));
         long deadline = System.currentTimeMillis() + timeoutMs;
         synchronized (lock) {
-            while (!cancelled && error == null && entry.downloadedBytes < bytes && !complete) {
+            scheduleRangeLocked(s, Math.min(total, e + 1L), s > entry.downloadedBytes + playbackWindowBytes(total) / 2L);
+            while (!cancelled && error == null && !isRangeAvailableLocked(s, e) && !complete) {
+                maybeScheduleWindowLocked(total);
                 long left = deadline - System.currentTimeMillis();
                 if (left <= 0) break;
                 lock.wait(Math.min(left, 1000L));
             }
-            return entry.downloadedBytes >= bytes || complete;
+            return isRangeAvailableLocked(s, e) || complete;
+        }
+    }
+
+    public boolean isRangeAvailable(long start, long endInclusive) {
+        synchronized (lock) {
+            return isRangeAvailableLocked(start, endInclusive);
         }
     }
 
@@ -523,6 +655,95 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         synchronized (lock) {
             lock.notifyAll();
         }
+    }
+
+    private boolean isRangeAvailableLocked(long start, long endInclusive) {
+        if (entry.finalFile.exists() || complete) return true;
+        long total = entry.totalBytes;
+        if (total <= 0) return false;
+        long s = Math.max(0, Math.min(total - 1L, start));
+        long e = Math.max(s, Math.min(total - 1L, endInclusive));
+        if (s == 0 && entry.downloadedBytes >= e + 1L) return true;
+        long pos = s;
+        while (pos <= e) {
+            Chunk c = findDoneChunkContainingLocked(pos);
+            if (c == null) return false;
+            if (c.end >= e) return true;
+            pos = c.end + 1L;
+        }
+        return true;
+    }
+
+    private long contiguousEndFromLocked(long start) {
+        long total = entry.totalBytes;
+        if (total <= 0) return 0;
+        long pos = Math.max(0, Math.min(total, start));
+        while (pos < total) {
+            Chunk c = findDoneChunkContainingLocked(pos);
+            if (c == null) break;
+            pos = Math.min(total, c.end + 1L);
+        }
+        return pos;
+    }
+
+    private Chunk findDoneChunkContainingLocked(long pos) {
+        for (Chunk c : chunks) {
+            if (c.state == CHUNK_DONE && c.start <= pos && c.end >= pos) return c;
+        }
+        return null;
+    }
+
+    private Chunk findChunkByStartLocked(long start) {
+        for (Chunk c : chunks) {
+            if (c.start == start) return c;
+        }
+        return null;
+    }
+
+    private boolean hasPendingLocked() {
+        for (Chunk c : chunks) if (c.state == CHUNK_PENDING) return true;
+        return false;
+    }
+
+    private boolean hasInFlightLocked() {
+        for (Chunk c : chunks) if (c.state == CHUNK_IN_FLIGHT) return true;
+        return false;
+    }
+
+    private static int autoWorkerCount(long total) {
+        if (total <= 0) return 8;
+        if (total <= 256L * MB) return 12;
+        if (total <= 1024L * MB) return 10;
+        if (total <= 4L * 1024L * MB) return 8;
+        if (total <= 8L * 1024L * MB) return 5;
+        return 3;
+    }
+
+    private static long chunkSizeFor(long total) {
+        if (total <= 256L * MB) return 2L * MB;
+        if (total <= 1024L * MB) return 6L * MB;
+        if (total <= 4L * 1024L * MB) return 12L * MB;
+        if (total <= 8L * 1024L * MB) return 24L * MB;
+        return 32L * MB;
+    }
+
+    private long playbackWindowBytes(long total) {
+        long cs = chunkSizeFor(total);
+        int wc = autoWorkerCount(total);
+        long byWorkers = cs * Math.max(3, wc) * 4L;
+        long floor;
+        if (total <= 256L * MB) floor = 32L * MB;
+        else if (total <= 1024L * MB) floor = 96L * MB;
+        else if (total <= 4L * 1024L * MB) floor = 192L * MB;
+        else floor = 256L * MB;
+        return Math.min(total, Math.max(floor, byWorkers));
+    }
+
+    private static long seekInitialWindowBytes(long total) {
+        if (total <= 256L * MB) return 8L * MB;
+        if (total <= 1024L * MB) return 12L * MB;
+        if (total <= 4L * 1024L * MB) return 24L * MB;
+        return 32L * MB;
     }
 
     private void registerConnection(HttpURLConnection c) {
@@ -572,6 +793,21 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         } finally {
             if (in != null) try { in.close(); } catch (Exception ignored) {}
             if (out != null) try { out.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    private static final class Chunk {
+        final long start;
+        final long end;
+        int state = CHUNK_PENDING;
+
+        Chunk(long start, long end) {
+            this.start = start;
+            this.end = end;
+        }
+
+        long length() {
+            return end - start + 1L;
         }
     }
 

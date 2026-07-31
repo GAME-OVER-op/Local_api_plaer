@@ -26,10 +26,10 @@ public class Store {
     public static final int LIBVLC_DEFAULT_CACHING_MS = 4000;
     private static final int LIBVLC_MIN_CACHING_MS = 300;
     private static final int LIBVLC_MAX_CACHING_MS = 60000;
-    public static final int PLAYBACK_CACHE_DEFAULT_THREADS = 8;
+    public static final int PLAYBACK_CACHE_DEFAULT_THREADS = 12;
     public static final int PLAYBACK_PREFETCH_DEFAULT_THREADS = 3;
-    public static final int PLAYBACK_CACHE_MAX_THREADS = 20;
-    public static final int PLAYBACK_PREFETCH_MAX_THREADS = 8;
+    public static final int PLAYBACK_CACHE_MAX_THREADS = 12;
+    public static final int PLAYBACK_PREFETCH_MAX_THREADS = 6;
 
     private static String watchedRaw = null;
     private static Set<String> watchedCache = null;
@@ -220,7 +220,7 @@ public class Store {
     }
 
     public static int clampPlaybackCacheThreads(int value) {
-        if (value < 1) return 1;
+        if (value < 3) return 3;
         if (value > PLAYBACK_CACHE_MAX_THREADS) return PLAYBACK_CACHE_MAX_THREADS;
         return value;
     }

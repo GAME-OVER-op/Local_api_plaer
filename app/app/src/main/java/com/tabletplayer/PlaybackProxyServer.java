@@ -21,6 +21,7 @@ public final class PlaybackProxyServer implements AutoCloseable {
         long availableBytes();
         boolean complete();
         boolean waitForBytes(long bytes, long timeoutMs) throws InterruptedException;
+        boolean waitForRange(long start, long endInclusive, long timeoutMs) throws InterruptedException;
     }
 
     private final DataSource source;
@@ -109,11 +110,11 @@ public final class PlaybackProxyServer implements AutoCloseable {
             long end = range.end >= 0 ? range.end : (total > 0 ? total - 1 : Long.MAX_VALUE - 1);
             if (start < 0) start = 0;
             if (total > 0 && end >= total) end = total - 1;
-            long firstNeed = start + 1;
-            source.waitForBytes(firstNeed, 30000L);
+            long firstEnd = Math.min(end, start + 1024L * 1024L - 1L);
+            boolean initialReady = source.waitForRange(start, firstEnd, 30000L);
 
             long available = source.availableBytes();
-            if (available <= start) {
+            if (!initialReady) {
                 writeStatus(416, "Range Not Satisfiable", 0, null);
                 return;
             }
@@ -157,7 +158,8 @@ public final class PlaybackProxyServer implements AutoCloseable {
                 while (sent < length && running) {
                     long absolute = start + sent;
                     int want = (int) Math.min(buf.length, length - sent);
-                    source.waitForBytes(absolute + want, 30000L);
+                    boolean ok = source.waitForRange(absolute, absolute + want - 1L, 30000L);
+                    if (!ok) break;
                     int r = raf.read(buf, 0, want);
                     if (r < 0) {
                         if (source.complete()) break;
