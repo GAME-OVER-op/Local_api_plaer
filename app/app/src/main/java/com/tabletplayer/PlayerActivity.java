@@ -49,8 +49,6 @@ public class PlayerActivity extends AppCompatActivity {
     private static final int NET_CACHING = 4000;
     private static final int LOCAL_CACHING = 15000;
     private static final long POSITION_SAVE_INTERVAL_MS = 10000;
-    private static final long CACHE_PREPARE_TIMEOUT_MS = 30000;
-    private static final long CACHE_EARLY_ESTIMATE_MS = 8000;
     private static final long CACHE_LOCAL_START_CHECK_MS = 10000L;
     private static final long CACHE_LOCAL_START_HARD_TIMEOUT_MS = 45000L;
     private static final long DIRECT_RESUME_LIMIT_MS = 10L * 60L * 1000L;
@@ -640,21 +638,13 @@ public class PlayerActivity extends AppCompatActivity {
             fallbackToDirect(playbackCache.getError());
             return;
         }
-        long elapsed = System.currentTimeMillis() - playbackCache.getStartedAtMs();
-        boolean timedOut = elapsed >= CACHE_PREPARE_TIMEOUT_MS;
-        if (playbackCache.isReadyToPlay(lastKnownDuration, speeds[speedIdx], timedOut)) {
+        if (playbackCache.isReadyToPlay(lastKnownDuration, speeds[speedIdx])) {
             startLocalCachePlayback();
             return;
         }
-        if (timedOut) {
-            fallbackToDirect("Скорости недостаточно для устойчивого просмотра");
-            return;
-        }
-        if (elapsed >= CACHE_EARLY_ESTIMATE_MS
-                && playbackCache.shouldFallbackEarly(lastKnownDuration, speeds[speedIdx])) {
-            fallbackToDirect("Скорости недостаточно для быстрой подготовки");
-            return;
-        }
+        // Не переключаем источник по таймеру: на больших файлах резкая отмена
+        // загрузки и запуск сетевого MediaPlayer через 30 секунд создавали гонку
+        // между libVLC, локальным HTTP-сервером и потоком записи кэша.
         ui.postDelayed(cacheDecision, 300L);
     }
 
@@ -1518,10 +1508,16 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     protected void onStop() {
         ui.removeCallbacks(ticker);
+        // После Back не трогаем нативный объект второй раз: позиция уже сохранена,
+        // а единая очистка выполняется в onDestroy.
+        if (isFinishing() || destroyed) {
+            super.onStop();
+            return;
+        }
         saveCurrentPosition(true);
         if (player != null) {
-            if (player.isPlaying()) setPlaying(false);
             try {
+                if (player.isPlaying()) setPlaying(false);
                 player.detachViews();
                 viewsDetached = true;
                 currentVoutCount = 0;
@@ -1540,15 +1536,15 @@ public class PlayerActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        if (destroyed || isFinishing()) return;
         saveCurrentPosition(true);
         playbackState = STATE_STOPPING;
-        releasePlayerForTransition();
-        stopPlaybackCache(true);
-        if (queuePrefetcher != null) {
-            queuePrefetcher.closeAndClear();
-            queuePrefetcher = null;
-        }
-        super.onBackPressed();
+        // Не освобождаем нативный MediaPlayer прямо из обработчика Back.
+        // Android сразу вызывает onStop/onDestroy, и прежняя двойная цепочка
+        // stop/detach/release могла пересечься с callbacks libVLC и локальным сокетом.
+        destroyed = true;
+        ui.removeCallbacksAndMessages(null);
+        finish();
         overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }
 

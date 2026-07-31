@@ -174,7 +174,7 @@ final class PlaybackCache {
     }
 
     /** Строгий порог либо безопасный динамический старт по скорости и запасу. */
-    boolean isReadyToPlay(long durationMs, float rate, boolean timeoutReached) {
+    boolean isReadyToPlay(long durationMs, float rate) {
         if (complete || downloadedBytes >= getPrepareTargetBytes()) return true;
         long elapsed = System.currentTimeMillis() - startedAtMs;
         if (elapsed < 7000L) return false;
@@ -204,19 +204,6 @@ final class PlaybackCache {
         return false;
     }
 
-    boolean shouldFallbackEarly(long durationMs, float rate) {
-        long elapsed = System.currentTimeMillis() - startedAtMs;
-        if (elapsed < 10000L || downloadedBytes < 8L * 1024L * 1024L) return false;
-        long duration = durationMs > 0 ? durationMs : knownDurationMs;
-        long speed = bytesPerSecond;
-        if (duration > 0 && totalBytes > 0 && speed > 0) {
-            double mediaBps = (double) totalBytes * 1000.0 / (double) duration;
-            return speed < mediaBps * Math.max(1f, rate) * 0.85;
-        }
-        // Без известной длительности не делаем ранний отказ: ждём полные
-        // 30 секунд и только затем сравниваем скорость с безопасной оценкой.
-        return false;
-    }
 
     boolean isComplete() { return complete; }
     boolean isFailed() { return failed; }
