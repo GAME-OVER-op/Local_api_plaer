@@ -18,39 +18,21 @@ android {
 
     buildTypes {
         release {
-            // R8 оптимизирует только bytecode. Исходные ресурсы и их набор не меняем.
             minifyEnabled true
-            shrinkResources false
+            shrinkResources true
             signingConfig signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 
     compileOptions {
-        // Сам Gradle работает на JDK 17, приложению достаточно Java 8.
-        // Это не даёт случайно использовать API Java, отсутствующие на Android 4.4.
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
-    }
-
-    buildFeatures {
-        buildConfig false
-        aidl false
-        renderScript false
-        dataBinding false
-        viewBinding false
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
     lint {
-        // Lint выполняется для release и создаёт отчёт, но намеренные legacy-API
-        // Android 4.4 не блокируют выпуск до их точечной классификации.
         abortOnError false
-        checkReleaseBuilds true
-        // Личная sideload-сборка намеренно сохраняет targetSdk 22 для старого поведения Android.
-        // Отключаем только требование Google Play; остальные проверки Lint остаются включены.
-        disable += ['ExpiredTargetSdkVersion']
-        htmlReport true
-        textReport true
+        checkReleaseBuilds false
     }
 }
 
@@ -59,10 +41,4 @@ dependencies {
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'androidx.media:media:1.4.3'
     implementation 'org.videolan.android:libvlc-all:3.5.1'
-}
-
-
-tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {
-    options.encoding = 'UTF-8'
-    options.incremental = true
 }

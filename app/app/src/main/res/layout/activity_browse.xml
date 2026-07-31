@@ -57,16 +57,6 @@
         android:paddingLeft="8dp"
         android:paddingRight="6dp">
 
-        <Button
-            android:id="@+id/servers_btn"
-            style="@style/ControlButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:minWidth="0dp"
-            android:text="← Серверы"
-            android:textColor="@color/header_text"
-            android:textSize="13sp" />
-
         <HorizontalScrollView
             android:layout_width="0dp"
             android:layout_height="wrap_content"

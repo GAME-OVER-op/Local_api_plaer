@@ -33,27 +33,6 @@
         android:textStyle="bold"
         android:visibility="gone" />
 
-    <TextView
-        android:id="@+id/technical_card"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top|left"
-        android:layout_marginLeft="12dp"
-        android:layout_marginTop="62dp"
-        android:background="@drawable/technical_card_bg"
-        android:clickable="false"
-        android:focusable="false"
-        android:fontFamily="monospace"
-        android:maxWidth="300dp"
-        android:paddingLeft="10dp"
-        android:paddingRight="10dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp"
-        android:text="Локальный кэш"
-        android:textColor="#F2FFFFFF"
-        android:textSize="11sp"
-        android:visibility="gone" />
-
     <LinearLayout
         android:id="@+id/buffering"
         android:layout_width="wrap_content"
@@ -65,20 +44,9 @@
         android:padding="22dp">
 
         <ProgressBar
-            android:id="@+id/buffer_spinner"
             android:layout_width="48dp"
             android:layout_height="48dp"
             style="?android:attr/progressBarStyleLarge" />
-
-        <ProgressBar
-            android:id="@+id/buffer_progress"
-            style="?android:attr/progressBarStyleHorizontal"
-            android:layout_width="220dp"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:max="1000"
-            android:progress="0"
-            android:visibility="gone" />
 
         <TextView
             android:id="@+id/buffering_text"
@@ -98,25 +66,6 @@
             android:text="Повторить"
             android:visibility="gone" />
     </LinearLayout>
-
-
-    <TextView
-        android:id="@+id/cache_status"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="top|right"
-        android:layout_marginTop="14dp"
-        android:layout_marginRight="14dp"
-        android:alpha="0.72"
-        android:background="@drawable/overlay_bg"
-        android:paddingLeft="10dp"
-        android:paddingRight="10dp"
-        android:paddingTop="6dp"
-        android:paddingBottom="6dp"
-        android:text="↓ 30%"
-        android:textColor="#FFFFFF"
-        android:textSize="12sp"
-        android:visibility="gone" />
 
     <TextView
         android:id="@+id/gesture_info"
@@ -166,10 +115,7 @@
                 android:layout_weight="1"
                 android:layout_marginLeft="10dp"
                 android:layout_marginRight="10dp"
-                android:minHeight="2dp"
-                android:maxHeight="2dp"
-                android:max="1000"
-                android:progressDrawable="@drawable/player_seek_progress" />
+                android:max="1000" />
         </LinearLayout>
 
         <HorizontalScrollView

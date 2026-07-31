@@ -18,27 +18,19 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 /** Экран скачанных на устройство файлов: просмотр / установка / удаление. */
 public class DownloadsActivity extends AppCompatActivity {
-    private static final int MAX_FILES = 10000;
-    private static final int MAX_DEPTH = 32;
     private final List<File> files = new ArrayList<>();
     private ListView list;
     private TextView empty;
     private Adapter adapter;
-    private LayoutInflater inflater;
-    private static final Comparator<File> FILE_NAME_COMPARATOR =
-            (left, right) -> Util.naturalCompare(left.getName(), right.getName());
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         setContentView(R.layout.activity_downloads);
-        inflater = LayoutInflater.from(this);
         setTitle("Загрузки");
         list = findViewById(R.id.dl_list);
         empty = findViewById(R.id.dl_empty);
@@ -60,39 +52,26 @@ public class DownloadsActivity extends AppCompatActivity {
     private void reload() {
         files.clear();
         File dir = DownloadService.downloadsDir();
-        try {
-            collectFiles(dir, dir.getCanonicalPath(), 0, new HashSet<String>());
-        } catch (Exception ignored) {
-        }
+        collectFiles(dir);
         if (!files.isEmpty()) {
-            Collections.sort(files, FILE_NAME_COMPARATOR);
+            Collections.sort(files, new Comparator<File>() {
+                @Override
+                public int compare(File a, File b) {
+                    return Util.naturalCompare(a.getName(), b.getName());
+                }
+            });
         }
         adapter.notifyDataSetChanged();
         empty.setVisibility(files.isEmpty() ? View.VISIBLE : View.GONE);
     }
 
 
-    private void collectFiles(File dir, String root, int depth, Set<String> visited) {
-        if (depth > MAX_DEPTH || files.size() >= MAX_FILES) return;
-        try {
-            String canonical = dir.getCanonicalPath();
-            if (!canonical.equals(root) && !canonical.startsWith(root + File.separator)) return;
-            if (!visited.add(canonical)) return;
-        } catch (Exception e) {
-            return;
-        }
+    private void collectFiles(File dir) {
         File[] arr = dir.listFiles();
         if (arr == null) return;
         for (File f : arr) {
-            if (files.size() >= MAX_FILES) return;
-            if (f.isDirectory()) collectFiles(f, root, depth + 1, visited);
-            else if (f.isFile() && !f.getName().endsWith(".part")) {
-                try {
-                    String canonical = f.getCanonicalPath();
-                    if (canonical.startsWith(root + File.separator)) files.add(f);
-                } catch (Exception ignored) {
-                }
-            }
+            if (f.isFile()) files.add(f);
+            else if (f.isDirectory()) collectFiles(f);
         }
     }
 
@@ -138,7 +117,7 @@ public class DownloadsActivity extends AppCompatActivity {
                 .setMessage("Удалить файл с устройства?")
                 .setPositiveButton("Удалить", (d, w) -> {
                     if (f.delete()) {
-                        DownloadService.cleanupEmptyParents(f.getParentFile());
+                        deleteEmptyParents(f.getParentFile());
                         Toast.makeText(this, "Удалено", Toast.LENGTH_SHORT).show();
                         reload();
                     } else {
@@ -147,6 +126,21 @@ public class DownloadsActivity extends AppCompatActivity {
                 })
                 .setNegativeButton("Отмена", null)
                 .show();
+    }
+
+
+    private void deleteEmptyParents(File dir) {
+        File root = DownloadService.downloadsDir();
+        while (dir != null && !dir.equals(root)) {
+            String[] left = dir.list();
+            if (left != null && left.length == 0) {
+                File parent = dir.getParentFile();
+                if (!dir.delete()) return;
+                dir = parent;
+            } else {
+                return;
+            }
+        }
     }
 
     private String guessMime(String name) {
@@ -161,50 +155,38 @@ public class DownloadsActivity extends AppCompatActivity {
         return "*/*";
     }
 
-    private static final class DownloadRowHolder {
-        final TextView icon;
-        final TextView name;
-        final TextView sub;
-        final View check;
-        final View queue;
-
-        DownloadRowHolder(View root) {
-            icon = root.findViewById(R.id.item_icon);
-            name = root.findViewById(R.id.item_name);
-            sub = root.findViewById(R.id.item_sub);
-            check = root.findViewById(R.id.item_check);
-            queue = root.findViewById(R.id.item_queue);
-        }
-    }
-
     class Adapter extends BaseAdapter {
-        @Override public int getCount() { return files.size(); }
-        @Override public File getItem(int i) { return files.get(i); }
-        @Override public long getItemId(int i) { return i; }
+        @Override
+        public int getCount() {
+            return files.size();
+        }
+
+        @Override
+        public Object getItem(int i) {
+            return files.get(i);
+        }
+
+        @Override
+        public long getItemId(int i) {
+            return i;
+        }
 
         @Override
         public View getView(int pos, View convert, ViewGroup parent) {
-            DownloadRowHolder holder;
             if (convert == null) {
-                convert = inflater.inflate(R.layout.list_item, parent, false);
-                holder = new DownloadRowHolder(convert);
-                convert.setTag(holder);
-            } else {
-                holder = (DownloadRowHolder) convert.getTag();
+                convert = LayoutInflater.from(DownloadsActivity.this).inflate(R.layout.list_item, parent, false);
             }
-            File file = files.get(pos);
-            String fileName = file.getName();
-            holder.check.setVisibility(View.GONE);
-            holder.queue.setVisibility(View.GONE);
-            holder.icon.setText(Util.isVideo(fileName) ? "🎬" : (Util.isApk(fileName) ? "📦" : "📄"));
-            holder.name.setText(fileName);
-            String relative = DownloadService.relativeDisplayPath(file);
-            int slash = relative.lastIndexOf(File.separatorChar);
-            String folder = slash > 0 ? relative.substring(0, slash) : "";
-            String size = Util.humanSize(file.length());
-            holder.sub.setText(folder.isEmpty() ? size : size + "  ·  " + folder);
+            File f = files.get(pos);
+            String nm = f.getName();
+            TextView icon = convert.findViewById(R.id.item_icon);
+            TextView name = convert.findViewById(R.id.item_name);
+            TextView sub = convert.findViewById(R.id.item_sub);
+            convert.findViewById(R.id.item_check).setVisibility(View.GONE);
+            convert.findViewById(R.id.item_queue).setVisibility(View.GONE);
+            icon.setText(Util.isVideo(nm) ? "🎬" : (Util.isApk(nm) ? "📦" : "📄"));
+            name.setText(nm);
+            sub.setText(Util.humanSize(f.length()));
             return convert;
         }
     }
-
 }

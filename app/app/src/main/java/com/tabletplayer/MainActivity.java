@@ -1,6 +1,9 @@
 package com.tabletplayer;
 
+import android.content.Context;
 import android.content.Intent;
+import android.net.DhcpInfo;
+import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -17,10 +20,16 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 
 import org.json.JSONArray;
+import org.json.JSONObject;
 
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
     private static final String KEY_IP = "ip";
@@ -32,7 +41,7 @@ public class MainActivity extends AppCompatActivity {
     private ListView history;
     private TextView historyEmpty;
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private final HashMap<String, String> serverNames = new HashMap<>();
+    private final Map<String, String> serverNames = new HashMap<>();
 
     @Override
     protected void onCreate(Bundle b) {
@@ -139,7 +148,18 @@ public class MainActivity extends AppCompatActivity {
         btn.setText("🔍 Поиск…");
         final int p = portValue();
         new Thread(() -> {
-            final List<Discovery.Server> found = Discovery.find(this, p, 1800);
+            final List<JSONObject> found = new ArrayList<>();
+            try {
+                List<Discovery.Server> servers = Discovery.find(this, p, 1800);
+                for (Discovery.Server s : servers) {
+                    JSONObject info = new JSONObject();
+                    info.put("host", s.host);
+                    info.put("name", s.name == null || s.name.isEmpty() ? "media-server" : s.name);
+                    info.put("port", s.port);
+                    found.add(info);
+                }
+            } catch (Exception ignored) {
+            }
             ui.post(() -> {
                 btn.setEnabled(true);
                 btn.setText("🔍 Найти серверы в сети");
@@ -148,25 +168,26 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    private void showFound(final List<Discovery.Server> list) {
+    private void showFound(final List<JSONObject> list) {
         if (list.isEmpty()) {
             Toast.makeText(this, "Серверы не найдены", Toast.LENGTH_SHORT).show();
             return;
         }
         final String[] labels = new String[list.size()];
         for (int i = 0; i < list.size(); i++) {
-            Discovery.Server server = list.get(i);
-            labels[i] = server.name + "\n" + server.host + ":" + server.port;
-            serverNames.put(server.host + ":" + server.port, server.name);
+            JSONObject o = list.get(i);
+            labels[i] = o.optString("name") + "\n" + o.optString("host") + ":" + o.optInt("port");
+            serverNames.put(o.optString("host") + ":" + o.optInt("port"), o.optString("name"));
         }
         new androidx.appcompat.app.AlertDialog.Builder(this)
                 .setTitle("Найденные серверы")
                 .setItems(labels, (dialog, which) -> {
-                    Discovery.Server server = list.get(which);
-                    ip.setText(server.host);
-                    port.setText(String.valueOf(server.port));
-                    App.prefs(this).edit().putString(KEY_IP, server.host)
-                            .putString(KEY_PORT, String.valueOf(server.port)).apply();
+                    JSONObject o = list.get(which);
+                    String host = o.optString("host");
+                    int p = o.optInt("port", 10930);
+                    ip.setText(host);
+                    port.setText(String.valueOf(p));
+                    App.prefs(this).edit().putString(KEY_IP, host).putString(KEY_PORT, String.valueOf(p)).apply();
                 })
                 .setNegativeButton("Закрыть", null)
                 .show();
