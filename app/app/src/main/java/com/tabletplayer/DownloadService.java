@@ -154,7 +154,9 @@ public class DownloadService extends Service {
         NotificationCompat.Builder nb = builder(id, name);
         boolean cancelled = false;
         File out = null;
+        TransferCoordinator.Lease lease = null;
         try {
+            lease = TransferCoordinator.get().acquire(TransferCoordinator.Priority.MANUAL_DOWNLOAD, name);
             out = targetFile(base, path, name);
             File dir = out.getParentFile();
             if (dir != null && !dir.exists()) dir.mkdirs();
@@ -216,9 +218,12 @@ public class DownloadService extends Service {
         } catch (Exception ex) {
             nb.setOngoing(false).setProgress(0, 0, false).setContentText("Ошибка: " + ex.getMessage()).setAutoCancel(true);
             nm.notify(id, nb.build());
+            if (lease != null) lease.close();
             finishOne();
             return;
         }
+
+        if (lease != null) lease.close();
 
         if (cancelled) {
             nm.cancel(id);

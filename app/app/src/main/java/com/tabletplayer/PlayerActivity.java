@@ -36,6 +36,23 @@ import java.util.Comparator;
 import java.util.List;
 
 public class PlayerActivity extends AppCompatActivity {
+    private enum SourceMode {
+        LOCAL_FILE,
+        DIRECT_REMOTE,
+        LOCAL_CACHE
+    }
+
+    private enum PlaybackPhase {
+        IDLE,
+        PREPARING,
+        STARTING_LOCAL,
+        PLAYING_LOCAL,
+        SWITCHING_TO_DIRECT,
+        PLAYING_DIRECT,
+        STOPPING,
+        DESTROYED
+    }
+
     private static final int JUMP_MS = 10000;
     private static final int JUMP90_MS = 90000;
     private static final int AUTO_HIDE_MS = 3500;
@@ -67,6 +84,12 @@ public class PlayerActivity extends AppCompatActivity {
     private long lastPosSaveAt = 0;
     private long lastSavedPosition = -1;
     private boolean completedCurrent = false;
+    private SourceMode sourceMode = SourceMode.DIRECT_REMOTE;
+    private PlaybackPhase playbackPhase = PlaybackPhase.IDLE;
+    private int playbackGeneration = 0;
+    private boolean terminalHandled = false;
+    private boolean destroyed = false;
+
 
     private final float[] speeds = {1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f};
     private int speedIdx = 0;
@@ -178,7 +201,7 @@ public class PlayerActivity extends AppCompatActivity {
             @Override
             public void onStopTrackingTouch(SeekBar sb) {
                 dragging = false;
-                if (duration > 0) player.setTime(sb.getProgress() * duration / 1000);
+                if (duration > 0 && player != null) player.setTime(sb.getProgress() * duration / 1000);
                 showControls();
             }
         });
@@ -198,22 +221,97 @@ public class PlayerActivity extends AppCompatActivity {
         options.add("--network-caching=" + NET_CACHING);
         options.add("--file-caching=" + NET_CACHING);
         libVLC = new LibVLC(this, options);
-        player = new MediaPlayer(libVLC);
-        player.attachViews(videoLayout, null, false, false);
-        player.setEventListener(event -> {
-            final int type = event.type;
-            final float pct = (type == MediaPlayer.Event.Buffering) ? event.getBuffering() : 0f;
-            ui.post(() -> handlePlayerEvent(type, pct));
-        });
+        setPlaybackPhase(PlaybackPhase.IDLE);
     }
 
-    private void handlePlayerEvent(int type, float pct) {
-        if (player == null) return;
+    private MediaPlayer createMediaPlayer(final int generation) {
+        MediaPlayer mp = new MediaPlayer(libVLC);
+        mp.attachViews(videoLayout, null, false, false);
+        mp.setEventListener(event -> {
+            final int type = event.type;
+            final float pct = (type == MediaPlayer.Event.Buffering) ? event.getBuffering() : 0f;
+            ui.post(() -> handlePlayerEvent(generation, type, pct));
+        });
+        return mp;
+    }
+
+    private void releaseCurrentPlayer() {
+        MediaPlayer old = player;
+        player = null;
+        if (old == null) return;
+        try { old.setEventListener(null); } catch (Throwable ignored) {}
+        try { old.stop(); } catch (Throwable ignored) {}
+        try { old.detachViews(); } catch (Throwable ignored) {}
+        try { old.release(); } catch (Throwable ignored) {}
+    }
+
+    private void setPlaybackPhase(PlaybackPhase phase) {
+        playbackPhase = phase;
+    }
+
+    private boolean isCurrentGeneration(int generation) {
+        return !destroyed && generation == playbackGeneration && playbackPhase != PlaybackPhase.DESTROYED;
+    }
+
+    private boolean beginTerminalHandling(int generation) {
+        if (!isCurrentGeneration(generation)) return false;
+        if (terminalHandled) return false;
+        terminalHandled = true;
+        return true;
+    }
+
+    private void startSource(String p, String nm, long resume, SourceMode mode, boolean reconnectStart) {
+        if (destroyed || libVLC == null) return;
+        int generation = ++playbackGeneration;
+        ui.removeCallbacks(reconnectAgain);
+        path = p;
+        name = nm;
+        sourceMode = mode;
+        pendingResumeMs = resume;
+        currentMs = 0;
+        duration = 0;
+        seekPreview = 0;
+        if (seek != null) {
+            seek.setProgress(0);
+            seek.setSecondaryProgress(0);
+        }
+        started = false;
+        terminalHandled = false;
+        completedCurrent = false;
+        lastPosSaveAt = 0;
+        lastSavedPosition = -1;
+        if (!reconnectStart) {
+            reconnecting = false;
+            reconnectAttempts = 0;
+        }
+        setPlaybackPhase(mode == SourceMode.DIRECT_REMOTE
+                ? (reconnectStart ? PlaybackPhase.SWITCHING_TO_DIRECT : PlaybackPhase.PREPARING)
+                : PlaybackPhase.STARTING_LOCAL);
+        if (!local) updateEpisodeIndex();
+        setTitle(nm);
+        titleBar.setText(nm);
+        if (!reconnectStart) showBuffering("Подготовка…");
+
+        releaseCurrentPlayer();
+        MediaPlayer mp = createMediaPlayer(generation);
+        Media media = buildMedia(p, mode);
+        player = mp;
+        mp.setMedia(media);
+        media.release();
+        mp.play();
+        mp.setRate(speeds[speedIdx]);
+        showControls();
+    }
+
+    private void handlePlayerEvent(int generation, int type, float pct) {
+        if (!isCurrentGeneration(generation) || player == null) return;
         switch (type) {
             case MediaPlayer.Event.Playing:
                 reconnectAttempts = 0;
                 reconnecting = false;
                 started = true;
+                terminalHandled = false;
+                setPlaybackPhase(sourceMode == SourceMode.DIRECT_REMOTE ? PlaybackPhase.PLAYING_DIRECT : PlaybackPhase.PLAYING_LOCAL);
                 hideBuffering();
                 if (pendingResumeMs > 0) {
                     player.setTime(pendingResumeMs);
@@ -236,10 +334,10 @@ public class PlayerActivity extends AppCompatActivity {
                 updatePlaybackState();
                 break;
             case MediaPlayer.Event.EndReached:
-                handleEnd();
+                handleEnd(generation);
                 break;
             case MediaPlayer.Event.EncounteredError:
-                handleDrop();
+                handleDrop(generation);
                 break;
         }
     }
@@ -318,32 +416,25 @@ public class PlayerActivity extends AppCompatActivity {
         }
     }
 
-    private Media buildMedia(String p) {
-        Uri uri = local ? Uri.fromFile(new File(p)) : Uri.parse(streamUrl(p));
+    private Media buildMedia(String p, SourceMode mode) {
+        Uri uri;
+        if (mode == SourceMode.LOCAL_FILE) {
+            uri = Uri.fromFile(new File(p));
+        } else {
+            uri = Uri.parse(streamUrl(p));
+        }
         Media media = new Media(libVLC, uri);
         media.setHWDecoderEnabled(true, false);
-        media.addOption(":network-caching=" + NET_CACHING);
+        if (mode == SourceMode.DIRECT_REMOTE) {
+            media.addOption(":network-caching=" + NET_CACHING);
+        } else {
+            media.addOption(":file-caching=" + NET_CACHING);
+        }
         return media;
     }
 
     private void playPath(String p, String nm, long resume) {
-        path = p;
-        name = nm;
-        pendingResumeMs = resume;
-        started = false;
-        completedCurrent = false;
-        lastPosSaveAt = 0;
-        lastSavedPosition = -1;
-        if (!local) updateEpisodeIndex();
-        setTitle(nm);
-        titleBar.setText(nm);
-        showBuffering("Подготовка…");
-        Media media = buildMedia(p);
-        player.setMedia(media);
-        media.release();
-        player.play();
-        player.setRate(speeds[speedIdx]);
-        showControls();
+        startSource(p, nm, resume, local ? SourceMode.LOCAL_FILE : SourceMode.DIRECT_REMOTE, false);
     }
 
     private void playEpisode(int index) {
@@ -376,10 +467,12 @@ public class PlayerActivity extends AppCompatActivity {
         overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }
 
-    private void handleEnd() {
-        if (local) {
+    private void handleEnd(int generation) {
+        if (!beginTerminalHandling(generation)) return;
+        if (sourceMode == SourceMode.LOCAL_FILE) {
             completedCurrent = true;
             Store.clearPos(this, path);
+            setPlaybackPhase(PlaybackPhase.STOPPING);
             finishFade();
             return;
         }
@@ -389,23 +482,30 @@ public class PlayerActivity extends AppCompatActivity {
             completedCurrent = true;
             Store.clearPos(this, path);
             Store.markWatched(this, path);
+            setPlaybackPhase(PlaybackPhase.STOPPING);
             showNextDialog();
         } else {
-            handleDrop();
+            terminalHandled = false;
+            handleDrop(generation);
         }
     }
 
-    private void handleDrop() {
-        if (local) {
+    private void handleDrop(int generation) {
+        if (!beginTerminalHandling(generation)) return;
+        if (sourceMode == SourceMode.LOCAL_FILE) {
             Toast.makeText(this, "Ошибка воспроизведения файла", Toast.LENGTH_LONG).show();
             return;
         }
-        reconnectStep();
+        reconnectStep(generation);
     }
 
     /** Статус «поиск сервера»: повтор на текущем IP, затем переобнаружение (IP мог смениться). */
     private void reconnectStep() {
-        if (player == null) return;
+        reconnectStep(playbackGeneration);
+    }
+
+    private void reconnectStep(final int generation) {
+        if (!isCurrentGeneration(generation)) return;
         if (!reconnecting) {
             reconnecting = true;
             reconnectAttempts = 0;
@@ -418,39 +518,35 @@ public class PlayerActivity extends AppCompatActivity {
         }
         if (reconnectAttempts <= 3) {
             showBuffering("Соединение потеряно. Переподключение… (" + reconnectAttempts + ")");
-            ui.postDelayed(() -> reloadStream(resumeMs), 1500);
+            ui.postDelayed(() -> {
+                if (isCurrentGeneration(generation)) reloadStream(generation, resumeMs);
+            }, 1500);
         } else {
             showBuffering("Поиск сервера в сети…");
-            rediscover(resumeMs);
+            rediscover(generation, resumeMs);
         }
     }
 
-    private void reloadStream(long ms) {
-        if (player == null) return;
-        started = false;
-        pendingResumeMs = ms;
-        Media media = buildMedia(path);
-        player.setMedia(media);
-        media.release();
-        player.play();
-        player.setRate(speeds[speedIdx]);
+    private void reloadStream(int generation, long ms) {
+        if (!isCurrentGeneration(generation)) return;
+        startSource(path, name, ms, SourceMode.DIRECT_REMOTE, true);
     }
 
-    private void rediscover(final long ms) {
+    private void rediscover(final int generation, final long ms) {
         final int port = portFromBase(base);
         new Thread(() -> {
             final List<Discovery.Server> servers = Discovery.find(this, port, 2500);
             final String nb = pickServer(servers);
             ui.post(() -> {
-                if (player == null) return;
+                if (!isCurrentGeneration(generation)) return;
                 if (nb != null) {
                     base = nb;
-                    reloadStream(ms);
+                    reloadStream(generation, ms);
                 } else {
-                    ui.postDelayed(reconnectAgain, 1500);
+                    ui.postDelayed(() -> reconnectStep(generation), 1500);
                 }
             });
-        }).start();
+        }, "PlayerRediscover").start();
     }
 
     private String pickServer(List<Discovery.Server> servers) {
@@ -472,7 +568,10 @@ public class PlayerActivity extends AppCompatActivity {
 
     private boolean verifyPath(String cand, String p) {
         HttpURLConnection c = null;
+        TransferCoordinator.Lease lease = null;
         try {
+            lease = TransferCoordinator.get().tryAcquire(TransferCoordinator.Priority.PLAYBACK_METADATA, "verify", 2500);
+            if (lease == null) return false;
             c = (HttpURLConnection) new URL(cand + "/download?path=" + Util.enc(p)).openConnection();
             App.auth(c, this);
             c.setRequestProperty("Range", "bytes=0-0");
@@ -484,6 +583,7 @@ public class PlayerActivity extends AppCompatActivity {
             return false;
         } finally {
             if (c != null) c.disconnect();
+            if (lease != null) lease.close();
         }
     }
 
@@ -575,26 +675,33 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private String httpGet(String u) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
-        App.auth(c, this);
-        c.setConnectTimeout(8000);
-        c.setReadTimeout(40000);
-        if (c.getResponseCode() != 200) {
-            c.disconnect();
-            throw new RuntimeException("HTTP " + c.getResponseCode());
+        HttpURLConnection c = null;
+        InputStream in = null;
+        TransferCoordinator.Lease lease = null;
+        try {
+            lease = TransferCoordinator.get().acquire(TransferCoordinator.Priority.PLAYBACK_METADATA, "httpGet");
+            c = (HttpURLConnection) new URL(u).openConnection();
+            App.auth(c, this);
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(40000);
+            if (c.getResponseCode() != 200) {
+                throw new RuntimeException("HTTP " + c.getResponseCode());
+            }
+            in = c.getInputStream();
+            java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int r;
+            while ((r = in.read(buf)) != -1) bo.write(buf, 0, r);
+            return bo.toString("UTF-8");
+        } finally {
+            if (in != null) try { in.close(); } catch (Exception ignored) {}
+            if (c != null) c.disconnect();
+            if (lease != null) lease.close();
         }
-        InputStream in = c.getInputStream();
-        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int r;
-        while ((r = in.read(buf)) != -1) bo.write(buf, 0, r);
-        in.close();
-        c.disconnect();
-        return bo.toString("UTF-8");
     }
 
     private void setPlaying(boolean play) {
-        if (player == null) return;
+        if (destroyed || player == null) return;
         if (play && !player.isPlaying()) player.play();
         else if (!play && player.isPlaying()) player.pause();
         updatePlayIcon();
@@ -621,7 +728,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void cycleSpeed() {
         speedIdx = (speedIdx + 1) % speeds.length;
-        player.setRate(speeds[speedIdx]);
+        if (player != null) player.setRate(speeds[speedIdx]);
         speed.setText(speeds[speedIdx] + "x");
     }
 
@@ -687,7 +794,7 @@ public class PlayerActivity extends AppCompatActivity {
                     if (Math.abs(totalX) > Math.abs(totalY) && Math.abs(totalX) > 40) {
                         mode = 1;
                         dragging = true;
-                        dragStartTime = player.getTime();
+                        dragStartTime = player != null ? player.getTime() : 0;
                     } else if (Math.abs(totalY) > 40 && e1.getX() > w / 2f) {
                         mode = 2;
                         dragging = true;
@@ -836,6 +943,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        setPlaybackPhase(PlaybackPhase.STOPPING);
         savePosition(true);
         super.onBackPressed();
         overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
@@ -843,18 +951,19 @@ public class PlayerActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        destroyed = true;
+        playbackGeneration++;
+        setPlaybackPhase(PlaybackPhase.DESTROYED);
         super.onDestroy();
         ui.removeCallbacksAndMessages(null);
-        if (session != null) session.release();
-        if (audioManager != null) audioManager.abandonAudioFocus(focusListener);
-        if (player != null) {
-            player.stop();
-            player.detachViews();
-            player.release();
-            player = null;
+        if (session != null) {
+            try { session.release(); } catch (Throwable ignored) {}
+            session = null;
         }
+        if (audioManager != null) audioManager.abandonAudioFocus(focusListener);
+        releaseCurrentPlayer();
         if (libVLC != null) {
-            libVLC.release();
+            try { libVLC.release(); } catch (Throwable ignored) {}
             libVLC = null;
         }
     }
