@@ -173,12 +173,64 @@
                 android:textColor="@color/text_primary"
                 android:textColorHint="@color/text_secondary" />
 
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Дозагрузка: потоки текущей серии"
+                android:textColor="@color/text_primary"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/playback_cache_threads"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/edit_bg"
+                android:inputType="number"
+                android:imeOptions="actionDone"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:selectAllOnFocus="true"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_secondary" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Предзагрузка: потоки очереди"
+                android:textColor="@color/text_primary"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/playback_prefetch_threads"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/edit_bg"
+                android:inputType="number"
+                android:imeOptions="actionDone"
+                android:maxLines="1"
+                android:singleLine="true"
+                android:selectAllOnFocus="true"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_secondary" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="По умолчанию: 8 для текущей серии, 3 для предзагрузки. Общий лимит приложения — 20 соединений."
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
             <Button
                 android:id="@+id/reset_libvlc_btn"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="18dp"
-                android:text="Сбросить настройки libVLC" />
+                android:text="Сбросить настройки libVLC и кэша" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

@@ -37,7 +37,10 @@ public final class PlaybackCacheManager {
         public final long createdAt;
         public long lastUsedAt;
         public long totalBytes = -1;
+        // Непрерывно доступные байты от начала файла. Именно это безопасно отдавать libVLC.
         public long downloadedBytes = 0;
+        // Сколько байт уже скачано суммарно всеми Range-потоками, включая будущие участки.
+        public long cachedBytes = 0;
         public int generation = 0;
         public State state = State.PARTIAL;
         private int users = 0;

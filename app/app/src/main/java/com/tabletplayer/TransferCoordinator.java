@@ -7,9 +7,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * Единый ограничитель сетевых потоков приложения.
  *
- * Сервер по умолчанию держит небольшое число worker-потоков, а libVLC может
- * открыть свой удалённый поток вне Java. Поэтому Java-часть намеренно оставляет
- * один свободный слот под прямое воспроизведение libVLC.
+ * Глобальный ограничитель удалённых Java-соединений. Playback-cache теперь сам
+ * регулирует число Range-потоков, а этот класс не даёт всему приложению уйти
+ * выше безопасного общего лимита.
  */
 public final class TransferCoordinator {
     public enum Priority {
@@ -20,7 +20,7 @@ public final class TransferCoordinator {
     }
 
     private static final TransferCoordinator INSTANCE = new TransferCoordinator();
-    private static final int MAX_JAVA_REMOTE_TRANSFERS = 3;
+    private static final int MAX_JAVA_REMOTE_TRANSFERS = 20;
 
     private final Semaphore remote = new Semaphore(MAX_JAVA_REMOTE_TRANSFERS, true);
     private final AtomicInteger active = new AtomicInteger(0);
@@ -47,6 +47,10 @@ public final class TransferCoordinator {
 
     public int activeRemoteTransfers() {
         return active.get();
+    }
+
+    public int maxRemoteTransfers() {
+        return MAX_JAVA_REMOTE_TRANSFERS;
     }
 
     private void release() {

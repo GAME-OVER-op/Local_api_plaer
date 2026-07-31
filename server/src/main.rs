@@ -328,7 +328,10 @@ fn main() {
     let state = Arc::new(State { config, knocks_path: knocks_path.clone() });
     let shared_approved = Arc::clone(&approved);
 
-    let workers = thread::available_parallelism().map(|n| n.get()).unwrap_or(4).max(4);
+    let workers = thread::available_parallelism()
+        .map(|n| n.get().saturating_mul(4))
+        .unwrap_or(16)
+        .clamp(8, 32);
     let mut handles = Vec::new();
     for _ in 0..workers {
         let server = Arc::clone(&server);

@@ -20,10 +20,16 @@ public class Store {
     static final String KEY_LIBVLC_NETWORK_CACHING = "libvlc_network_caching";
     static final String KEY_LIBVLC_FILE_CACHING = "libvlc_file_caching";
     static final String KEY_LIBVLC_LOCAL_CACHING = "libvlc_local_caching";
+    static final String KEY_PLAYBACK_CACHE_THREADS = "playback_cache_threads";
+    static final String KEY_PLAYBACK_PREFETCH_THREADS = "playback_prefetch_threads";
 
     public static final int LIBVLC_DEFAULT_CACHING_MS = 4000;
     private static final int LIBVLC_MIN_CACHING_MS = 300;
     private static final int LIBVLC_MAX_CACHING_MS = 60000;
+    public static final int PLAYBACK_CACHE_DEFAULT_THREADS = 8;
+    public static final int PLAYBACK_PREFETCH_DEFAULT_THREADS = 3;
+    public static final int PLAYBACK_CACHE_MAX_THREADS = 20;
+    public static final int PLAYBACK_PREFETCH_MAX_THREADS = 8;
 
     private static String watchedRaw = null;
     private static Set<String> watchedCache = null;
@@ -192,7 +198,37 @@ public class Store {
                 .putInt(KEY_LIBVLC_NETWORK_CACHING, LIBVLC_DEFAULT_CACHING_MS)
                 .putInt(KEY_LIBVLC_FILE_CACHING, LIBVLC_DEFAULT_CACHING_MS)
                 .putInt(KEY_LIBVLC_LOCAL_CACHING, LIBVLC_DEFAULT_CACHING_MS)
+                .putInt(KEY_PLAYBACK_CACHE_THREADS, PLAYBACK_CACHE_DEFAULT_THREADS)
+                .putInt(KEY_PLAYBACK_PREFETCH_THREADS, PLAYBACK_PREFETCH_DEFAULT_THREADS)
                 .apply();
+    }
+
+    public static int getPlaybackCacheThreads(Context c) {
+        return clampPlaybackCacheThreads(App.prefs(c).getInt(KEY_PLAYBACK_CACHE_THREADS, PLAYBACK_CACHE_DEFAULT_THREADS));
+    }
+
+    public static void setPlaybackCacheThreads(Context c, int value) {
+        App.prefs(c).edit().putInt(KEY_PLAYBACK_CACHE_THREADS, clampPlaybackCacheThreads(value)).apply();
+    }
+
+    public static int getPlaybackPrefetchThreads(Context c) {
+        return clampPlaybackPrefetchThreads(App.prefs(c).getInt(KEY_PLAYBACK_PREFETCH_THREADS, PLAYBACK_PREFETCH_DEFAULT_THREADS));
+    }
+
+    public static void setPlaybackPrefetchThreads(Context c, int value) {
+        App.prefs(c).edit().putInt(KEY_PLAYBACK_PREFETCH_THREADS, clampPlaybackPrefetchThreads(value)).apply();
+    }
+
+    public static int clampPlaybackCacheThreads(int value) {
+        if (value < 1) return 1;
+        if (value > PLAYBACK_CACHE_MAX_THREADS) return PLAYBACK_CACHE_MAX_THREADS;
+        return value;
+    }
+
+    public static int clampPlaybackPrefetchThreads(int value) {
+        if (value < 1) return 1;
+        if (value > PLAYBACK_PREFETCH_MAX_THREADS) return PLAYBACK_PREFETCH_MAX_THREADS;
+        return value;
     }
 
     public static int clampCaching(int value) {

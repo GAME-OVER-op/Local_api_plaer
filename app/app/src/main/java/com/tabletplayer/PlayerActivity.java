@@ -701,7 +701,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private String cacheProgressLine(PlaybackCacheTask task, boolean usePrepareTarget) {
         if (task == null) return "0 Б / 0 Б";
-        long got = Math.max(0L, task.downloadedBytes());
+        long got = Math.max(0L, task.cachedBytes());
         long limit = usePrepareTarget ? task.prepareTargetBytes() : task.totalBytes();
         if (limit <= 0) limit = task.totalBytes();
         StringBuilder text = new StringBuilder();
@@ -1378,11 +1378,15 @@ public class PlayerActivity extends AppCompatActivity {
         }
 
         if (cacheTask != null && cacheTask.totalBytes() > 0) {
-            long got = Math.max(0L, cacheTask.downloadedBytes());
+            long got = Math.max(0L, cacheTask.cachedBytes());
+            long available = Math.max(0L, cacheTask.downloadedBytes());
             long total = Math.max(1L, cacheTask.totalBytes());
             long percent = Math.min(100L, got * 100L / total);
             text.append("\n").append(Util.humanSize(got)).append(" / ").append(Util.humanSize(total))
                     .append(" · ").append(percent).append('%');
+            if (available < got && !cacheTask.complete()) {
+                text.append(" · доступно ").append(Util.humanSize(available));
+            }
             long sp = cacheTask.recentSpeedBytesPerSec();
             if (sp > 0 && !cacheTask.complete()) {
                 text.append(" · ").append(Util.humanSize(sp)).append("/с");
@@ -1405,7 +1409,8 @@ public class PlayerActivity extends AppCompatActivity {
         text.append("\n").append(decoderNames[Math.max(0, Math.min(decoderMode, decoderNames.length - 1))])
                 .append(" · ").append(speeds[speedIdx]).append('x')
                 .append(" · Vout ").append(currentVoutCount);
-        text.append("\nсоединения приложения: ").append(TransferCoordinator.get().activeRemoteTransfers());
+        text.append("\nсоединения приложения: ").append(TransferCoordinator.get().activeRemoteTransfers())
+                .append('/').append(TransferCoordinator.get().maxRemoteTransfers());
         technicalCard.setText(text.toString());
         technicalCard.setVisibility(View.VISIBLE);
     }

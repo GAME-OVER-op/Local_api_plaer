@@ -21,6 +21,8 @@ public class SettingsActivity extends AppCompatActivity {
     private EditText networkCaching;
     private EditText fileCaching;
     private EditText localCaching;
+    private EditText playbackCacheThreads;
+    private EditText playbackPrefetchThreads;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -69,9 +71,13 @@ public class SettingsActivity extends AppCompatActivity {
         networkCaching = findViewById(R.id.network_caching);
         fileCaching = findViewById(R.id.file_caching);
         localCaching = findViewById(R.id.local_caching);
+        playbackCacheThreads = findViewById(R.id.playback_cache_threads);
+        playbackPrefetchThreads = findViewById(R.id.playback_prefetch_threads);
         setupCachingField(networkCaching, Store.getLibVlcNetworkCaching(this));
         setupCachingField(fileCaching, Store.getLibVlcFileCaching(this));
         setupCachingField(localCaching, Store.getLibVlcLocalCaching(this));
+        setupNumberField(playbackCacheThreads, Store.getPlaybackCacheThreads(this));
+        setupNumberField(playbackPrefetchThreads, Store.getPlaybackPrefetchThreads(this));
 
         Button reset = findViewById(R.id.reset_libvlc_btn);
         reset.setOnClickListener(v -> {
@@ -83,6 +89,8 @@ public class SettingsActivity extends AppCompatActivity {
             setCachingText(networkCaching, Store.LIBVLC_DEFAULT_CACHING_MS);
             setCachingText(fileCaching, Store.LIBVLC_DEFAULT_CACHING_MS);
             setCachingText(localCaching, Store.LIBVLC_DEFAULT_CACHING_MS);
+            setNumberText(playbackCacheThreads, Store.PLAYBACK_CACHE_DEFAULT_THREADS);
+            setNumberText(playbackPrefetchThreads, Store.PLAYBACK_PREFETCH_DEFAULT_THREADS);
             if (root != null) root.requestFocus();
         });
 
@@ -106,8 +114,12 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void setupCachingField(EditText field, int value) {
+        setupNumberField(field, value);
+    }
+
+    private void setupNumberField(EditText field, int value) {
         if (field == null) return;
-        setCachingText(field, value);
+        setNumberText(field, value);
         field.setSelectAllOnFocus(true);
         field.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_DONE || actionId == EditorInfo.IME_ACTION_NEXT) {
@@ -125,6 +137,10 @@ public class SettingsActivity extends AppCompatActivity {
         if (field != null) field.setText(String.valueOf(Store.clampCaching(value)));
     }
 
+    private void setNumberText(EditText field, int value) {
+        if (field != null) field.setText(String.valueOf(value));
+    }
+
     private void saveCachingFields() {
         if (networkCaching == null || fileCaching == null || localCaching == null) return;
         int network = readCaching(networkCaching, Store.getLibVlcNetworkCaching(this));
@@ -133,16 +149,30 @@ public class SettingsActivity extends AppCompatActivity {
         Store.setLibVlcNetworkCaching(this, network);
         Store.setLibVlcFileCaching(this, file);
         Store.setLibVlcLocalCaching(this, local);
+        if (playbackCacheThreads != null) {
+            int workers = readPlainNumber(playbackCacheThreads, Store.getPlaybackCacheThreads(this));
+            Store.setPlaybackCacheThreads(this, workers);
+        }
+        if (playbackPrefetchThreads != null) {
+            int workers = readPlainNumber(playbackPrefetchThreads, Store.getPlaybackPrefetchThreads(this));
+            Store.setPlaybackPrefetchThreads(this, workers);
+        }
         setCachingText(networkCaching, Store.getLibVlcNetworkCaching(this));
         setCachingText(fileCaching, Store.getLibVlcFileCaching(this));
         setCachingText(localCaching, Store.getLibVlcLocalCaching(this));
+        setNumberText(playbackCacheThreads, Store.getPlaybackCacheThreads(this));
+        setNumberText(playbackPrefetchThreads, Store.getPlaybackPrefetchThreads(this));
     }
 
     private int readCaching(EditText field, int fallback) {
+        return Store.clampCaching(readPlainNumber(field, fallback));
+    }
+
+    private int readPlainNumber(EditText field, int fallback) {
         try {
             String s = field.getText() == null ? "" : field.getText().toString().trim();
             if (s.length() == 0) return fallback;
-            return Store.clampCaching(Integer.parseInt(s));
+            return Integer.parseInt(s);
         } catch (Exception e) {
             return fallback;
         }

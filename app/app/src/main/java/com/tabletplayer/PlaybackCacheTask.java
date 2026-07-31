@@ -8,11 +8,20 @@ import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Один последовательный загрузчик для текущего воспроизведения или предзагрузки.
- * Он не управляет libVLC напрямую: только наполняет временный файл и сообщает
- * доступный объём локальному прокси.
+ * Range-загрузчик для локального playback-cache.
+ *
+ * Важное разделение:
+ * - cachedBytes — сколько скачано суммарно всеми потоками;
+ * - downloadedBytes/availableBytes — сколько байт непрерывно доступно от начала файла.
+ *
+ * Локальный proxy и libVLC видят только непрерывный участок, поэтому даже при
+ * многопоточном скачивании файл не отдаётся с дырками.
  */
 public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, AutoCloseable {
     public interface Listener {
@@ -31,6 +40,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private static final long SPEED_SAMPLE_WINDOW_MS = 8000L;
     private static final long MIN_EARLY_SPEED_BYTES_PER_SEC = 1536L * 1024L;
     private static final int BUFFER_SIZE = 256 * 1024;
+    private static final int MAX_CHUNK_RETRIES = 3;
 
     private final Context context;
     private final PlaybackCacheManager.Entry entry;
@@ -38,6 +48,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private final boolean prefetch;
     private final Object lock = new Object();
     private final ArrayDeque<Sample> samples = new ArrayDeque<>();
+    private final List<HttpURLConnection> activeConnections = new ArrayList<>();
 
     private volatile boolean cancelled;
     private volatile boolean complete;
@@ -46,11 +57,13 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private volatile boolean fallbackNotified;
     private volatile Exception error;
     private volatile Thread thread;
-    private volatile TransferCoordinator.Lease lease;
-    private volatile HttpURLConnection connection;
 
     private long startAtMs;
     private long lastProgressNotifyMs;
+    private boolean[] chunkDone;
+    private long[] chunkStart;
+    private long[] chunkEnd;
+    private int contiguousChunkIndex;
 
     public PlaybackCacheTask(Context context, PlaybackCacheManager.Entry entry, boolean prefetch, Listener listener) {
         this.context = context.getApplicationContext();
@@ -63,9 +76,17 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         return entry;
     }
 
+    /** Непрерывно доступно от начала файла. */
     public long downloadedBytes() {
         synchronized (lock) {
             return entry.downloadedBytes;
+        }
+    }
+
+    /** Скачано суммарно всеми Range-потоками. Может быть больше downloadedBytes(). */
+    public long cachedBytes() {
+        synchronized (lock) {
+            return Math.max(entry.cachedBytes, entry.downloadedBytes);
         }
     }
 
@@ -94,6 +115,11 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         return finished;
     }
 
+    public int workerCount() {
+        if (prefetch) return Store.getPlaybackPrefetchThreads(context);
+        return Store.getPlaybackCacheThreads(context);
+    }
+
     public long prepareTargetBytes() {
         long total = totalBytes();
         if (total <= 0) return START_MAX_BYTES;
@@ -103,6 +129,15 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     }
 
     public int percent() {
+        long total = totalBytes();
+        if (total <= 0) return 0;
+        long pct = cachedBytes() * 100L / total;
+        if (pct < 0) pct = 0;
+        if (pct > 100) pct = 100;
+        return (int) pct;
+    }
+
+    public int availablePercent() {
         long total = totalBytes();
         if (total <= 0) return 0;
         long pct = downloadedBytes() * 100L / total;
@@ -147,7 +182,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             }
         }, prefetch ? "PlaybackPrefetch" : "PlaybackCacheDownload");
         thread.setDaemon(true);
-        thread.setPriority(Thread.MIN_PRIORITY);
+        thread.setPriority(prefetch ? Thread.MIN_PRIORITY : Thread.NORM_PRIORITY);
         thread.start();
     }
 
@@ -163,19 +198,21 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
                 notifyFallback("сервер не сообщил размер файла");
                 return;
             }
-            PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "total=" + total + " target=" + prepareTargetBytes());
             synchronized (lock) {
                 entry.totalBytes = total;
+                entry.downloadedBytes = 0;
+                entry.cachedBytes = 0;
+                addSampleLocked(0);
             }
-            downloadSequential(total);
+            PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "total=" + total + " target=" + prepareTargetBytes() + " workers=" + workerCount() + " max=" + TransferCoordinator.get().maxRemoteTransfers());
+            downloadParallel(total);
         } catch (Exception e) {
             error = e;
             PlayerDiagnostics.log(context, prefetch ? "prefetch-error" : "cache-error", e);
             if (!cancelled && listener != null) listener.onCacheError(this, e);
         } finally {
             finished = true;
-            if (connection != null) connection.disconnect();
-            if (lease != null) lease.close();
+            disconnectAll();
             entry.release();
             synchronized (lock) {
                 lock.notifyAll();
@@ -190,6 +227,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             metaLease = TransferCoordinator.get().tryAcquire(TransferCoordinator.Priority.PLAYBACK_METADATA, "cache-size", 5000L);
             if (metaLease == null) return -1;
             c = (HttpURLConnection) new URL(entry.base + "/download?path=" + Util.enc(entry.path)).openConnection();
+            registerConnection(c);
             App.auth(c, context);
             c.setRequestProperty("Range", "bytes=0-0");
             c.setConnectTimeout(8000);
@@ -206,59 +244,183 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             }
             return -1;
         } finally {
-            if (c != null) c.disconnect();
+            if (c != null) {
+                unregisterConnection(c);
+                c.disconnect();
+            }
             if (metaLease != null) metaLease.close();
         }
     }
 
-    private void downloadSequential(long total) throws Exception {
-        lease = TransferCoordinator.get().acquire(prefetch ? TransferCoordinator.Priority.PREFETCH : TransferCoordinator.Priority.PLAYBACK_CACHE, prefetch ? "prefetch" : "playback-cache");
-        long existing = entry.partFile.exists() ? entry.partFile.length() : 0;
-        if (existing > total) existing = 0;
-        synchronized (lock) {
-            entry.downloadedBytes = existing;
-            addSampleLocked(existing);
-        }
-        if (existing >= total) {
-            completeFile(total);
-            return;
+    private void downloadParallel(long total) throws Exception {
+        prepareChunkTable(total);
+        if (entry.partFile.exists()) entry.partFile.delete();
+        RandomAccessFile init = new RandomAccessFile(entry.partFile, "rw");
+        try {
+            init.setLength(total);
+        } finally {
+            init.close();
         }
 
-        connection = (HttpURLConnection) new URL(entry.base + "/download?path=" + Util.enc(entry.path)).openConnection();
-        App.auth(connection, context);
-        if (existing > 0) connection.setRequestProperty("Range", "bytes=" + existing + "-");
-        connection.setConnectTimeout(10000);
-        connection.setReadTimeout(40000);
-        int code = connection.getResponseCode();
-        if (!(code == 200 || code == 206)) throw new RuntimeException("HTTP " + code);
-        if (existing > 0 && code == 200) existing = 0;
+        int workers = Math.max(1, Math.min(workerCount(), chunkDone.length));
+        final AtomicInteger nextChunk = new AtomicInteger(0);
+        final AtomicBoolean workerFailed = new AtomicBoolean(false);
+        ArrayList<Thread> threads = new ArrayList<>();
+        for (int i = 0; i < workers; i++) {
+            final int workerIndex = i;
+            Thread t = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    runWorker(total, nextChunk, workerFailed, workerIndex);
+                }
+            }, (prefetch ? "PrefetchRange-" : "CacheRange-") + i);
+            t.setDaemon(true);
+            t.setPriority(prefetch ? Thread.MIN_PRIORITY : Thread.NORM_PRIORITY);
+            threads.add(t);
+            t.start();
+        }
 
+        for (Thread t : threads) {
+            while (t.isAlive()) {
+                try {
+                    t.join(1000L);
+                } catch (InterruptedException e) {
+                    cancelled = true;
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                maybeNotifyProgress();
+                if (!prefetch) {
+                    maybeNotifyReady();
+                    maybeTimeoutFallback();
+                }
+                if (cancelled || error != null) break;
+            }
+        }
+
+        if (error != null) throw error;
+        if (!cancelled && allChunksComplete()) completeFile(total);
+    }
+
+    private void runWorker(long total, AtomicInteger nextChunk, AtomicBoolean workerFailed, int workerIndex) {
+        while (!cancelled && error == null && !workerFailed.get()) {
+            int idx = nextChunk.getAndIncrement();
+            if (idx >= chunkDone.length) return;
+            boolean ok = false;
+            Exception last = null;
+            for (int attempt = 1; attempt <= MAX_CHUNK_RETRIES && !cancelled; attempt++) {
+                try {
+                    downloadChunk(idx, chunkStart[idx], chunkEnd[idx]);
+                    ok = true;
+                    break;
+                } catch (Exception e) {
+                    last = e;
+                    PlayerDiagnostics.log(context, prefetch ? "prefetch-retry" : "cache-retry", "worker=" + workerIndex + " chunk=" + idx + " attempt=" + attempt + " err=" + e.getMessage());
+                    try { Thread.sleep(200L * attempt); } catch (InterruptedException ignored) { break; }
+                }
+            }
+            if (!ok && !cancelled) {
+                error = last == null ? new RuntimeException("chunk failed") : last;
+                workerFailed.set(true);
+                cancelled = true;
+                disconnectAll();
+                synchronized (lock) {
+                    lock.notifyAll();
+                }
+                return;
+            }
+        }
+    }
+
+    private void downloadChunk(int idx, long start, long end) throws Exception {
+        TransferCoordinator.Lease l = null;
+        HttpURLConnection c = null;
         InputStream in = null;
         RandomAccessFile out = null;
         try {
-            in = connection.getInputStream();
+            l = TransferCoordinator.get().acquire(prefetch ? TransferCoordinator.Priority.PREFETCH : TransferCoordinator.Priority.PLAYBACK_CACHE, prefetch ? "prefetch-range" : "cache-range");
+            c = (HttpURLConnection) new URL(entry.base + "/download?path=" + Util.enc(entry.path)).openConnection();
+            registerConnection(c);
+            App.auth(c, context);
+            c.setRequestProperty("Range", "bytes=" + start + "-" + end);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(40000);
+            int code = c.getResponseCode();
+            if (code != 206) throw new RuntimeException("HTTP " + code + " for range " + start + "-" + end);
+            in = c.getInputStream();
             out = new RandomAccessFile(entry.partFile, "rw");
-            if (existing == 0) out.setLength(0);
-            out.seek(existing);
+            out.seek(start);
             byte[] buf = new byte[BUFFER_SIZE];
-            long written = existing;
+            long pos = start;
             int read;
-            while (!cancelled && (read = in.read(buf)) != -1) {
+            while (!cancelled && pos <= end && (read = in.read(buf, 0, (int) Math.min(buf.length, end - pos + 1))) != -1) {
                 out.write(buf, 0, read);
-                written += read;
-                synchronized (lock) {
-                    entry.downloadedBytes = written;
-                    addSampleLocked(written);
-                    lock.notifyAll();
-                }
-                maybeNotifyProgress();
-                maybeNotifyReady();
-                if (!prefetch) maybeTimeoutFallback();
+                pos += read;
             }
-            if (!cancelled && written >= total) completeFile(total);
+            if (cancelled) return;
+            if (pos <= end) throw new RuntimeException("short range " + start + "-" + end + " got=" + (pos - start));
+            markChunkComplete(idx);
         } finally {
             if (in != null) try { in.close(); } catch (Exception ignored) {}
             if (out != null) try { out.close(); } catch (Exception ignored) {}
+            if (c != null) {
+                unregisterConnection(c);
+                c.disconnect();
+            }
+            if (l != null) l.close();
+        }
+    }
+
+    private void prepareChunkTable(long total) {
+        long chunkSize = chooseChunkSize(total);
+        int count = (int) ((total + chunkSize - 1L) / chunkSize);
+        if (count < 1) count = 1;
+        chunkDone = new boolean[count];
+        chunkStart = new long[count];
+        chunkEnd = new long[count];
+        for (int i = 0; i < count; i++) {
+            long s = i * chunkSize;
+            long e = Math.min(total - 1L, s + chunkSize - 1L);
+            chunkStart[i] = s;
+            chunkEnd[i] = e;
+        }
+        contiguousChunkIndex = 0;
+    }
+
+    private static long chooseChunkSize(long total) {
+        if (total <= 256L * MB) return 4L * MB;
+        if (total <= 1024L * MB) return 8L * MB;
+        if (total <= 4L * 1024L * MB) return 16L * MB;
+        return 32L * MB;
+    }
+
+    private void markChunkComplete(int idx) {
+        synchronized (lock) {
+            if (chunkDone == null || idx < 0 || idx >= chunkDone.length || chunkDone[idx]) return;
+            chunkDone[idx] = true;
+            long cached = entry.cachedBytes + (chunkEnd[idx] - chunkStart[idx] + 1L);
+            if (cached > entry.totalBytes && entry.totalBytes > 0) cached = entry.totalBytes;
+            entry.cachedBytes = cached;
+            while (contiguousChunkIndex < chunkDone.length && chunkDone[contiguousChunkIndex]) {
+                entry.downloadedBytes = chunkEnd[contiguousChunkIndex] + 1L;
+                contiguousChunkIndex++;
+            }
+            if (entry.totalBytes > 0 && entry.downloadedBytes > entry.totalBytes) entry.downloadedBytes = entry.totalBytes;
+            addSampleLocked(entry.cachedBytes);
+            lock.notifyAll();
+        }
+        maybeNotifyProgress();
+        if (!prefetch) {
+            maybeNotifyReady();
+            maybeTimeoutFallback();
+        }
+    }
+
+    private boolean allChunksComplete() {
+        synchronized (lock) {
+            if (chunkDone == null) return false;
+            for (boolean b : chunkDone) if (!b) return false;
+            return true;
         }
     }
 
@@ -266,8 +428,10 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         complete = true;
         PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "complete total=" + total + " path=" + entry.path);
         synchronized (lock) {
+            entry.cachedBytes = total;
             entry.downloadedBytes = total;
             entry.totalBytes = total;
+            addSampleLocked(total);
             lock.notifyAll();
         }
         if (!entry.finalFile.exists()) {
@@ -286,19 +450,19 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     private void maybeNotifyReady() {
         if (prefetch || readyNotified || fallbackNotified || cancelled) return;
-        long downloaded = downloadedBytes();
+        long available = downloadedBytes();
         long target = prepareTargetBytes();
         long elapsed = System.currentTimeMillis() - startAtMs;
-        boolean targetReached = target > 0 && downloaded >= target;
-        boolean early = downloaded >= MIN_EARLY_START_BYTES
+        boolean targetReached = target > 0 && available >= target;
+        boolean early = available >= MIN_EARLY_START_BYTES
                 && elapsed >= 5000L
                 && recentSpeedBytesPerSec() >= MIN_EARLY_SPEED_BYTES_PER_SEC;
         boolean timeoutButUsable = elapsed >= PREPARE_TIMEOUT_MS
-                && downloaded >= MIN_EARLY_START_BYTES
+                && available >= MIN_EARLY_START_BYTES
                 && recentSpeedBytesPerSec() >= 1024L * 1024L;
         if (targetReached || early || timeoutButUsable) {
             readyNotified = true;
-            PlayerDiagnostics.log(context, "cache", "ready early=" + (!targetReached) + " downloaded=" + downloaded + " target=" + target + " speed=" + recentSpeedBytesPerSec());
+            PlayerDiagnostics.log(context, "cache", "ready early=" + (!targetReached) + " available=" + available + " cached=" + cachedBytes() + " target=" + target + " speed=" + recentSpeedBytesPerSec());
             PlaybackCacheManager.get().markState(entry, PlaybackCacheManager.State.PLAYING);
             if (listener != null) listener.onCacheReady(this, !targetReached);
         }
@@ -314,7 +478,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private void notifyFallback(String reason) {
         if (fallbackNotified || readyNotified || cancelled || prefetch) return;
         fallbackNotified = true;
-        PlayerDiagnostics.log(context, "cache-fallback", reason + " downloaded=" + downloadedBytes() + " target=" + prepareTargetBytes() + " speed=" + recentSpeedBytesPerSec());
+        PlayerDiagnostics.log(context, "cache-fallback", reason + " available=" + downloadedBytes() + " cached=" + cachedBytes() + " target=" + prepareTargetBytes() + " speed=" + recentSpeedBytesPerSec());
         if (listener != null) listener.onCacheFallback(this, reason);
     }
 
@@ -355,9 +519,32 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     @Override
     public void close() {
         cancelled = true;
-        if (connection != null) connection.disconnect();
+        disconnectAll();
         synchronized (lock) {
             lock.notifyAll();
+        }
+    }
+
+    private void registerConnection(HttpURLConnection c) {
+        synchronized (activeConnections) {
+            activeConnections.add(c);
+        }
+    }
+
+    private void unregisterConnection(HttpURLConnection c) {
+        synchronized (activeConnections) {
+            activeConnections.remove(c);
+        }
+    }
+
+    private void disconnectAll() {
+        ArrayList<HttpURLConnection> copy;
+        synchronized (activeConnections) {
+            copy = new ArrayList<>(activeConnections);
+            activeConnections.clear();
+        }
+        for (HttpURLConnection c : copy) {
+            try { c.disconnect(); } catch (Throwable ignored) {}
         }
     }
 
