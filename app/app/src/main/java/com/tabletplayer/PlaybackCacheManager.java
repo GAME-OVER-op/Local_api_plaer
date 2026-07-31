@@ -138,6 +138,30 @@ public final class PlaybackCacheManager {
         }
     }
 
+    public synchronized void deleteEntry(Entry entry) {
+        if (entry == null) return;
+        entry.release();
+        entry.state = State.RELEASED;
+        entries.remove(entry.key);
+        deleteQuietly(entry.partFile);
+        deleteQuietly(entry.finalFile);
+        File parent = entry.partFile.getParentFile();
+        if (parent != null) parent.delete();
+    }
+
+    public synchronized void clearAll(Context ctx) {
+        for (Entry e : new ArrayList<>(entries.values())) {
+            e.state = State.RELEASED;
+            deleteQuietly(e.partFile);
+            deleteQuietly(e.finalFile);
+            File parent = e.partFile.getParentFile();
+            if (parent != null) parent.delete();
+        }
+        entries.clear();
+        deleteTree(cacheRoot(ctx));
+        cacheRoot(ctx);
+    }
+
     public static File cacheRoot(Context ctx) {
         File root = new File(ctx.getCacheDir(), "playback-cache");
         if (!root.exists()) root.mkdirs();

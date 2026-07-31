@@ -96,6 +96,7 @@ public class BrowseActivity extends AppCompatActivity {
         crumbs = findViewById(R.id.crumbs);
         swipe = findViewById(R.id.swipe);
         Button searchBtn = findViewById(R.id.search_btn);
+        Button serversBtn = findViewById(R.id.servers_btn);
         ImageButton downloadsBtn = findViewById(R.id.downloads_btn);
         queueBar = findViewById(R.id.queue_bar);
         queueInfo = findViewById(R.id.queue_info);
@@ -110,6 +111,11 @@ public class BrowseActivity extends AppCompatActivity {
             startActivity(new Intent(this, DownloadsActivity.class));
             overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left);
         });
+        serversBtn.setOnClickListener(v -> {
+            finish();
+            overridePendingTransition(R.anim.slide_in_left, R.anim.slide_out_right);
+        });
+
 
         queueBtn.setOnClickListener(v -> {
             queueMode = !queueMode;

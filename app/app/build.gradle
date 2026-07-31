@@ -26,13 +26,24 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    buildFeatures {
+        buildConfig false
+        aidl false
+        renderScript false
+        dataBinding false
+        viewBinding false
     }
 
     lint {
         abortOnError false
-        checkReleaseBuilds false
+        checkReleaseBuilds true
+        disable += ['ExpiredTargetSdkVersion']
+        htmlReport true
+        textReport true
     }
 }
 
@@ -41,4 +52,10 @@ dependencies {
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'androidx.media:media:1.4.3'
     implementation 'org.videolan.android:libvlc-all:3.5.1'
+}
+
+
+tasks.withType(org.gradle.api.tasks.compile.JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.incremental = true
 }
