@@ -153,20 +153,24 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     private void runDownload() {
         startAtMs = System.currentTimeMillis();
+        PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "start path=" + entry.path + " file=" + entry.partFile.getName());
         try {
             PlaybackCacheManager.get().markState(entry, prefetch ? PlaybackCacheManager.State.PREFETCH : PlaybackCacheManager.State.PARTIAL);
             entry.retain();
             long total = fetchTotalBytes();
             if (total <= 0) {
+                PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "no total path=" + entry.path);
                 notifyFallback("сервер не сообщил размер файла");
                 return;
             }
+            PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "total=" + total + " target=" + prepareTargetBytes());
             synchronized (lock) {
                 entry.totalBytes = total;
             }
             downloadSequential(total);
         } catch (Exception e) {
             error = e;
+            PlayerDiagnostics.log(context, prefetch ? "prefetch-error" : "cache-error", e);
             if (!cancelled && listener != null) listener.onCacheError(this, e);
         } finally {
             finished = true;
@@ -260,6 +264,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     private void completeFile(long total) {
         complete = true;
+        PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "complete total=" + total + " path=" + entry.path);
         synchronized (lock) {
             entry.downloadedBytes = total;
             entry.totalBytes = total;
@@ -293,6 +298,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
                 && recentSpeedBytesPerSec() >= 1024L * 1024L;
         if (targetReached || early || timeoutButUsable) {
             readyNotified = true;
+            PlayerDiagnostics.log(context, "cache", "ready early=" + (!targetReached) + " downloaded=" + downloaded + " target=" + target + " speed=" + recentSpeedBytesPerSec());
             PlaybackCacheManager.get().markState(entry, PlaybackCacheManager.State.PLAYING);
             if (listener != null) listener.onCacheReady(this, !targetReached);
         }
@@ -308,6 +314,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private void notifyFallback(String reason) {
         if (fallbackNotified || readyNotified || cancelled || prefetch) return;
         fallbackNotified = true;
+        PlayerDiagnostics.log(context, "cache-fallback", reason + " downloaded=" + downloadedBytes() + " target=" + prepareTargetBytes() + " speed=" + recentSpeedBytesPerSec());
         if (listener != null) listener.onCacheFallback(this, reason);
     }
 

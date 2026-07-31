@@ -13,6 +13,7 @@ public class Store {
     static final String KEY_POS = "positions";
     static final String KEY_VOLUME = "boost_volume";
     static final String KEY_ASPECT = "aspect_mode";
+    static final String KEY_DECODER_MODE = "decoder_mode";
 
     private static String watchedRaw = null;
     private static Set<String> watchedCache = null;
@@ -111,5 +112,13 @@ public class Store {
 
     public static void setAspect(Context c, int v) {
         App.prefs(c).edit().putInt(KEY_ASPECT, v).apply();
+    }
+
+    public static int getDecoderMode(Context c, int def) {
+        return App.prefs(c).getInt(KEY_DECODER_MODE, def);
+    }
+
+    public static void setDecoderMode(Context c, int v) {
+        App.prefs(c).edit().putInt(KEY_DECODER_MODE, v).apply();
     }
 }

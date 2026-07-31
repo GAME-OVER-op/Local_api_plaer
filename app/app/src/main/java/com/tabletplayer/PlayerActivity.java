@@ -1,5 +1,6 @@
 package com.tabletplayer;
 
+import android.content.res.Configuration;
 import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Bundle;
@@ -61,6 +62,10 @@ public class PlayerActivity extends AppCompatActivity {
     private static final long SWIPE_FULL_WIDTH_MS = 120000;
     private static final int NET_CACHING = 4000;
     private static final long POS_SAVE_INTERVAL_MS = 7000;
+    private static final float TOP_GESTURE_DEAD_ZONE = 0.20f;
+    private static final int DECODER_AUTO = 0;
+    private static final int DECODER_HARDWARE = 1;
+    private static final int DECODER_SOFTWARE = 2;
 
     private String base, path, name, folder, serverName;
     private boolean local = false;
@@ -82,6 +87,12 @@ public class PlayerActivity extends AppCompatActivity {
     private long dragStartTime = 0;
     private int dragStartVol = 100, volume = 100, reconnectAttempts = 0;
     private boolean reconnecting = false;
+    private boolean ignoreGestureSequence = false;
+    private boolean videoViewsAttached = false;
+    private boolean wasPlayingBeforeStop = false;
+    private int lastVideoWidth = -1, lastVideoHeight = -1;
+    private int decoderMode = DECODER_AUTO;
+    private int lastBufferingBucket = -1;
     private long resumeMs = 0;
     private long lastPosSaveAt = 0;
     private long lastSavedPosition = -1;
@@ -95,6 +106,7 @@ public class PlayerActivity extends AppCompatActivity {
     private PlaybackCacheManager.Entry activeCacheEntry;
     private PlaybackProxyServer cacheProxy;
     private String cacheProxyUrl;
+    private String currentMediaOverrideUri;
     private long cacheSeekWaitMs = 0;
     private boolean directFallbackInProgress = false;
     private final Set<String> directOnlyThisSession = new HashSet<>();
@@ -104,6 +116,7 @@ public class PlayerActivity extends AppCompatActivity {
     private final float[] speeds = {1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f};
     private int speedIdx = 0;
     private final String[] aspectNames = {"По размеру", "16:9", "4:3", "Растянуть", "Оригинал"};
+    private final String[] decoderNames = {"Автоматически", "Аппаратный", "Программный"};
     private int aspectIdx = 0;
 
     private final List<String> episodePaths = new ArrayList<>();
@@ -162,6 +175,7 @@ public class PlayerActivity extends AppCompatActivity {
 
         volume = Store.getVolume(this, 100);
         aspectIdx = Store.getAspect(this, 0);
+        decoderMode = Store.getDecoderMode(this, DECODER_AUTO);
         videoLayout = findViewById(R.id.video_layout);
         controls = findViewById(R.id.controls);
         gestureOverlay = findViewById(R.id.gesture_overlay);
@@ -183,6 +197,20 @@ public class PlayerActivity extends AppCompatActivity {
         aspect = findViewById(R.id.aspect);
         fullscreen = findViewById(R.id.fullscreen);
 
+        videoLayout.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            int w = right - left;
+            int h = bottom - top;
+            if (w > 0 && h > 0 && (w != lastVideoWidth || h != lastVideoHeight)) {
+                lastVideoWidth = w;
+                lastVideoHeight = h;
+                ui.postDelayed(() -> {
+                    attachVideoViewsIfNeeded();
+                    applyAspect();
+                    PlayerDiagnostics.log(this, "layout", "video " + lastVideoWidth + "x" + lastVideoHeight + " aspect=" + aspectIdx);
+                }, 120L);
+            }
+        });
+
         retryBtn.setOnClickListener(v -> {
             retryBtn.setVisibility(View.GONE);
             reconnectAttempts = 0;
@@ -198,6 +226,14 @@ public class PlayerActivity extends AppCompatActivity {
         speed.setOnClickListener(v -> { cycleSpeed(); showControls(); });
         aspect.setOnClickListener(v -> { cycleAspect(); showControls(); });
         fullscreen.setOnClickListener(v -> { toggleImmersive(); showControls(); });
+        playPause.setOnLongClickListener(v -> {
+            showDecoderDialog();
+            return true;
+        });
+        aspect.setOnLongClickListener(v -> {
+            showDecoderDialog();
+            return true;
+        });
 
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -233,11 +269,14 @@ public class PlayerActivity extends AppCompatActivity {
         options.add("--file-caching=" + NET_CACHING);
         libVLC = new LibVLC(this, options);
         setPlaybackPhase(PlaybackPhase.IDLE);
+        PlayerDiagnostics.log(this, "libvlc", "init netCaching=" + NET_CACHING);
     }
 
     private MediaPlayer createMediaPlayer(final int generation) {
         MediaPlayer mp = new MediaPlayer(libVLC);
         mp.attachViews(videoLayout, null, false, false);
+        videoViewsAttached = true;
+        PlayerDiagnostics.log(this, "player", "create gen=" + generation);
         mp.setEventListener(event -> {
             final int type = event.type;
             final float pct = (type == MediaPlayer.Event.Buffering) ? event.getBuffering() : 0f;
@@ -253,10 +292,15 @@ public class PlayerActivity extends AppCompatActivity {
         try { old.setEventListener(null); } catch (Throwable ignored) {}
         try { old.stop(); } catch (Throwable ignored) {}
         try { old.detachViews(); } catch (Throwable ignored) {}
+        videoViewsAttached = false;
         try { old.release(); } catch (Throwable ignored) {}
+        PlayerDiagnostics.log(this, "player", "release");
     }
 
     private void setPlaybackPhase(PlaybackPhase phase) {
+        if (playbackPhase != phase) {
+            PlayerDiagnostics.log(this, "phase", playbackPhase + " -> " + phase + " source=" + sourceMode + " gen=" + playbackGeneration);
+        }
         playbackPhase = phase;
     }
 
@@ -285,6 +329,8 @@ public class PlayerActivity extends AppCompatActivity {
         path = p;
         name = nm;
         sourceMode = mode;
+        currentMediaOverrideUri = mediaOverrideUri;
+        PlayerDiagnostics.log(this, "start", "gen=" + generation + " mode=" + mode + " resume=" + resume + " path=" + p + " override=" + (mediaOverrideUri != null));
         pendingResumeMs = resume;
         currentMs = 0;
         duration = 0;
@@ -297,6 +343,7 @@ public class PlayerActivity extends AppCompatActivity {
         started = false;
         terminalHandled = false;
         completedCurrent = false;
+        lastBufferingBucket = -1;
         directFallbackInProgress = false;
         lastPosSaveAt = 0;
         lastSavedPosition = -1;
@@ -325,6 +372,15 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void handlePlayerEvent(int generation, int type, float pct) {
         if (!isCurrentGeneration(generation) || player == null) return;
+        if (type == MediaPlayer.Event.Buffering) {
+            int bucket = ((int) pct) / 10;
+            if (bucket != lastBufferingBucket) {
+                lastBufferingBucket = bucket;
+                PlayerDiagnostics.log(this, "event", "gen=" + generation + " Buffering " + ((int) pct) + "% source=" + sourceMode);
+            }
+        } else {
+            PlayerDiagnostics.log(this, "event", "gen=" + generation + " type=" + type + " source=" + sourceMode + " t=" + currentMs + "/" + duration);
+        }
         switch (type) {
             case MediaPlayer.Event.Playing:
                 reconnectAttempts = 0;
@@ -449,7 +505,7 @@ public class PlayerActivity extends AppCompatActivity {
             uri = Uri.parse(streamUrl(p));
         }
         Media media = new Media(libVLC, uri);
-        media.setHWDecoderEnabled(true, false);
+        applyDecoderMode(media);
         if (mode == SourceMode.DIRECT_REMOTE) {
             media.addOption(":network-caching=" + NET_CACHING);
         } else {
@@ -561,6 +617,7 @@ public class PlayerActivity extends AppCompatActivity {
     private void fallbackToDirect(String reason) {
         if (destroyed || directFallbackInProgress) return;
         directFallbackInProgress = true;
+        PlayerDiagnostics.log(this, "fallback", reason + " pos=" + currentMs + " path=" + path);
         String p = path;
         String nm = name;
         long pos = currentMs > 0 ? currentMs : pendingResumeMs;
@@ -590,6 +647,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void requestSeek(long targetMs) {
         if (player == null) return;
+        PlayerDiagnostics.log(this, "seek", "target=" + targetMs + " duration=" + duration + " source=" + sourceMode);
         if (targetMs < 0) targetMs = 0;
         if (duration > 0 && targetMs > duration) targetMs = duration;
         if (sourceMode == SourceMode.LOCAL_CACHE && cacheTask != null && duration > 0) {
@@ -703,6 +761,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void handleEnd(int generation) {
         if (!beginTerminalHandling(generation)) return;
+        PlayerDiagnostics.log(this, "end", "gen=" + generation + " source=" + sourceMode + " t=" + currentMs + "/" + duration);
         if (sourceMode == SourceMode.LOCAL_FILE) {
             completedCurrent = true;
             Store.clearPos(this, path);
@@ -726,6 +785,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void handleDrop(int generation) {
         if (!beginTerminalHandling(generation)) return;
+        PlayerDiagnostics.log(this, "drop", "gen=" + generation + " source=" + sourceMode + " t=" + currentMs + "/" + duration);
         if (sourceMode == SourceMode.LOCAL_FILE) {
             Toast.makeText(this, "Ошибка воспроизведения файла", Toast.LENGTH_LONG).show();
             return;
@@ -979,6 +1039,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void applyAspect() {
         if (player == null) return;
+        attachVideoViewsIfNeeded();
         switch (aspectIdx) {
             case 0:
                 player.setAspectRatio(null);
@@ -1004,10 +1065,76 @@ public class PlayerActivity extends AppCompatActivity {
         }
     }
 
+    private void applyDecoderMode(Media media) {
+        if (media == null) return;
+        switch (decoderMode) {
+            case DECODER_HARDWARE:
+                media.setHWDecoderEnabled(true, true);
+                break;
+            case DECODER_SOFTWARE:
+                media.setHWDecoderEnabled(false, false);
+                break;
+            case DECODER_AUTO:
+            default:
+                media.setHWDecoderEnabled(true, false);
+                break;
+        }
+        PlayerDiagnostics.log(this, "decoder", decoderNames[Math.max(0, Math.min(decoderMode, decoderNames.length - 1))]);
+    }
+
+    private void showDecoderDialog() {
+        int checked = Math.max(0, Math.min(decoderMode, decoderNames.length - 1));
+        new AlertDialog.Builder(this)
+                .setTitle("Режим декодера")
+                .setSingleChoiceItems(decoderNames, checked, (dialog, which) -> {
+                    dialog.dismiss();
+                    if (which == decoderMode) return;
+                    decoderMode = which;
+                    Store.setDecoderMode(this, decoderMode);
+                    flashInfo("Декодер: " + decoderNames[decoderMode]);
+                    restartCurrentSourceForDecoder();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void restartCurrentSourceForDecoder() {
+        if (destroyed || player == null || path == null) return;
+        long pos = currentMs > 0 ? currentMs : player.getTime();
+        SourceMode mode = sourceMode;
+        String override = currentMediaOverrideUri;
+        PlayerDiagnostics.log(this, "decoder", "restart mode=" + mode + " pos=" + pos);
+        startSource(path, name, pos, mode, false, override);
+    }
+
+    private void attachVideoViewsIfNeeded() {
+        if (player == null || videoViewsAttached || videoLayout == null || destroyed) return;
+        try {
+            player.attachViews(videoLayout, null, false, false);
+            videoViewsAttached = true;
+            PlayerDiagnostics.log(this, "surface", "attach");
+        } catch (Throwable e) {
+            PlayerDiagnostics.log(this, "surface-attach-error", e);
+        }
+    }
+
+    private void detachVideoViewsIfNeeded() {
+        if (player == null || !videoViewsAttached) return;
+        try {
+            player.detachViews();
+            PlayerDiagnostics.log(this, "surface", "detach");
+        } catch (Throwable e) {
+            PlayerDiagnostics.log(this, "surface-detach-error", e);
+        } finally {
+            videoViewsAttached = false;
+        }
+    }
+
     private void setupGestures() {
         final GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onSingleTapConfirmed(MotionEvent e) {
+                if (isTopDeadZone(e)) return false;
                 if (controlsVisible) hideControls();
                 else showControls();
                 return true;
@@ -1015,6 +1142,7 @@ public class PlayerActivity extends AppCompatActivity {
 
             @Override
             public boolean onDoubleTap(MotionEvent e) {
+                if (isTopDeadZone(e)) return false;
                 int w = gestureOverlay.getWidth();
                 float x = e.getX();
                 if (x < w / 3f) seekRelative(-JUMP_MS);
@@ -1025,6 +1153,7 @@ public class PlayerActivity extends AppCompatActivity {
 
             @Override
             public boolean onScroll(MotionEvent e1, MotionEvent e2, float dx, float dy) {
+                if (isTopDeadZone(e1)) return false;
                 int w = gestureOverlay.getWidth(), h = gestureOverlay.getHeight();
                 float totalX = e2.getX() - e1.getX();
                 float totalY = e2.getY() - e1.getY();
@@ -1061,15 +1190,30 @@ public class PlayerActivity extends AppCompatActivity {
         });
 
         gestureOverlay.setOnTouchListener((v, ev) -> {
-            gd.onTouchEvent(ev);
-            if (ev.getAction() == MotionEvent.ACTION_UP || ev.getAction() == MotionEvent.ACTION_CANCEL) {
+            int action = ev.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
+                ignoreGestureSequence = isTopDeadZone(ev);
+                if (ignoreGestureSequence) {
+                    PlayerDiagnostics.log(this, "gesture", "ignored top zone y=" + ev.getY());
+                    return false;
+                }
+            }
+            if (!ignoreGestureSequence) gd.onTouchEvent(ev);
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                 if (dragging && mode == 1 && player != null) requestSeek(seekPreview);
                 if (dragging) gestureInfo.setVisibility(View.GONE);
                 dragging = false;
                 mode = 0;
+                ignoreGestureSequence = false;
             }
-            return true;
+            return !ignoreGestureSequence;
         });
+    }
+
+    private boolean isTopDeadZone(MotionEvent e) {
+        if (e == null || gestureOverlay == null) return false;
+        int h = gestureOverlay.getHeight();
+        return h > 0 && e.getY() < h * TOP_GESTURE_DEAD_ZONE;
     }
 
     private void flashInfo(String text) {
@@ -1170,6 +1314,23 @@ public class PlayerActivity extends AppCompatActivity {
         super.onStart();
         ui.post(ticker);
         applyImmersive();
+        attachVideoViewsIfNeeded();
+        ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); }, 180L);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        attachVideoViewsIfNeeded();
+        ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); }, 220L);
+        PlayerDiagnostics.log(this, "lifecycle", "resume wasPlaying=" + wasPlayingBeforeStop);
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); }, 180L);
+        PlayerDiagnostics.log(this, "config", "orientation=" + newConfig.orientation + " aspect=" + aspectIdx);
     }
 
     @Override
@@ -1177,11 +1338,15 @@ public class PlayerActivity extends AppCompatActivity {
         super.onStop();
         ui.removeCallbacks(ticker);
         savePosition(true);
-        if (player != null && player.isPlaying()) setPlaying(false);
+        wasPlayingBeforeStop = player != null && player.isPlaying();
+        if (wasPlayingBeforeStop) setPlaying(false);
+        detachVideoViewsIfNeeded();
+        PlayerDiagnostics.log(this, "lifecycle", "stop wasPlaying=" + wasPlayingBeforeStop + " pos=" + currentMs);
     }
 
     @Override
     public void onBackPressed() {
+        PlayerDiagnostics.log(this, "lifecycle", "back pos=" + currentMs + " source=" + sourceMode);
         setPlaybackPhase(PlaybackPhase.STOPPING);
         savePosition(true);
         super.onBackPressed();
@@ -1190,6 +1355,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        PlayerDiagnostics.log(this, "lifecycle", "destroy pos=" + currentMs + " source=" + sourceMode);
         destroyed = true;
         playbackGeneration++;
         setPlaybackPhase(PlaybackPhase.DESTROYED);

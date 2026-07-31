@@ -36,6 +36,7 @@ public final class PlaybackProxyServer implements AutoCloseable {
         if (running) return url();
         server = new ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"));
         running = true;
+        PlayerDiagnostics.log(null, "proxy", "start " + url());
         thread = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -128,6 +129,7 @@ public final class PlaybackProxyServer implements AutoCloseable {
             if (range.requested && total > 0) {
                 contentRange = "bytes " + start + "-" + end + "/" + total;
             }
+            PlayerDiagnostics.log(null, "proxy-range", "code=" + code + " start=" + start + " end=" + end + " len=" + length + " total=" + total + " available=" + available);
             writeStatus(code, status, length, contentRange);
             copyBytes(start, length);
         }
