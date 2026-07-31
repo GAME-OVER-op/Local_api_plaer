@@ -51,7 +51,8 @@
             android:exported="false"
             android:theme="@style/AppTheme"
             android:screenOrientation="fullSensor"
-            android:configChanges="orientation|screenSize|keyboardHidden" />
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="stateAlwaysHidden|adjustResize" />
 
         <activity
             android:name=".PlayerActivity"

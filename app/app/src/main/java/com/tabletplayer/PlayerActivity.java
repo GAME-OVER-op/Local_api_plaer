@@ -94,6 +94,14 @@ public class PlayerActivity extends AppCompatActivity {
     private boolean wasPlayingBeforeStop = false;
     private int lastVideoWidth = -1, lastVideoHeight = -1;
     private int decoderMode = DECODER_AUTO;
+    private int networkCachingMs = Store.LIBVLC_DEFAULT_CACHING_MS;
+    private int fileCachingMs = Store.LIBVLC_DEFAULT_CACHING_MS;
+    private int localCachingMs = Store.LIBVLC_DEFAULT_CACHING_MS;
+    private boolean libVlcCatchUpFrames = true;
+    private boolean libVlcAvcodecFast = false;
+    private String libVlcSkipLoopFilter = "off";
+    private boolean localCacheStartupWaiting = false;
+    private long localCacheStartupBaseMs = 0;
     private int lastBufferingBucket = -1;
     private long resumeMs = 0;
     private long lastPosSaveAt = 0;
@@ -182,6 +190,7 @@ public class PlayerActivity extends AppCompatActivity {
         volume = Store.getVolume(this, 100);
         aspectIdx = Store.getAspect(this, 0);
         decoderMode = Store.getDecoderMode(this, DECODER_AUTO);
+        loadLibVlcSettings();
         videoLayout = findViewById(R.id.video_layout);
         controls = findViewById(R.id.controls);
         gestureOverlay = findViewById(R.id.gesture_overlay);
@@ -270,15 +279,38 @@ public class PlayerActivity extends AppCompatActivity {
         }
     }
 
+    private void loadLibVlcSettings() {
+        networkCachingMs = Store.getLibVlcNetworkCaching(this);
+        fileCachingMs = Store.getLibVlcFileCaching(this);
+        localCachingMs = Store.getLibVlcLocalCaching(this);
+        libVlcCatchUpFrames = Store.getLibVlcCatchUpFrames(this);
+        libVlcAvcodecFast = Store.getLibVlcAvcodecFast(this);
+        libVlcSkipLoopFilter = Store.getLibVlcSkipLoopFilter(this);
+    }
+
     private void initPlayer() {
+        loadLibVlcSettings();
         ArrayList<String> options = new ArrayList<>();
-        options.add("--network-caching=" + NET_CACHING);
-        options.add("--file-caching=" + NET_CACHING);
-        options.add("--no-drop-late-frames");
-        options.add("--no-skip-frames");
+        options.add("--network-caching=" + networkCachingMs);
+        options.add("--file-caching=" + fileCachingMs);
+        if (libVlcCatchUpFrames) {
+            options.add("--no-drop-late-frames");
+            options.add("--no-skip-frames");
+        }
+        if (libVlcAvcodecFast) {
+            options.add("--avcodec-fast");
+        }
+        if (!"off".equals(libVlcSkipLoopFilter)) {
+            options.add("--avcodec-skiploopfilter=" + libVlcSkipLoopFilter);
+        }
         libVLC = new LibVLC(this, options);
         setPlaybackPhase(PlaybackPhase.IDLE);
-        PlayerDiagnostics.log(this, "libvlc", "init netCaching=" + NET_CACHING + " catchUpFrames=true");
+        PlayerDiagnostics.log(this, "libvlc", "init networkCaching=" + networkCachingMs
+                + " fileCaching=" + fileCachingMs
+                + " localCaching=" + localCachingMs
+                + " catchUpFrames=" + libVlcCatchUpFrames
+                + " fast=" + libVlcAvcodecFast
+                + " skipLoop=" + libVlcSkipLoopFilter);
     }
 
     private MediaPlayer createMediaPlayer(final int generation) {
@@ -351,6 +383,8 @@ public class PlayerActivity extends AppCompatActivity {
             seek.setSecondaryProgress(0);
         }
         started = false;
+        localCacheStartupWaiting = false;
+        localCacheStartupBaseMs = 0;
         terminalHandled = false;
         completedCurrent = false;
         lastBufferingBucket = -1;
@@ -403,7 +437,13 @@ public class PlayerActivity extends AppCompatActivity {
                 started = true;
                 terminalHandled = false;
                 setPlaybackPhase(sourceMode == SourceMode.DIRECT_REMOTE ? PlaybackPhase.PLAYING_DIRECT : PlaybackPhase.PLAYING_LOCAL);
-                hideBuffering();
+                if (sourceMode == SourceMode.LOCAL_CACHE) {
+                    localCacheStartupWaiting = true;
+                    localCacheStartupBaseMs = Math.max(0L, pendingResumeMs);
+                    showLocalCacheStartupProgress();
+                } else {
+                    hideBuffering();
+                }
                 if (pendingResumeMs > 0) {
                     player.setTime(pendingResumeMs);
                     pendingResumeMs = 0;
@@ -423,7 +463,7 @@ public class PlayerActivity extends AppCompatActivity {
                             showBuffering("Подготовка… " + (int) pct + "%");
                         }
                     }
-                } else if (pct >= 100f) {
+                } else if (pct >= 100f && !localCacheStartupWaiting) {
                     hideBuffering();
                 }
                 break;
@@ -572,9 +612,11 @@ public class PlayerActivity extends AppCompatActivity {
         Media media = new Media(libVLC, uri);
         applyDecoderMode(media);
         if (mode == SourceMode.DIRECT_REMOTE) {
-            media.addOption(":network-caching=" + NET_CACHING);
+            media.addOption(":network-caching=" + networkCachingMs);
+        } else if (mode == SourceMode.LOCAL_CACHE) {
+            media.addOption(":file-caching=" + localCachingMs);
         } else {
-            media.addOption(":file-caching=" + NET_CACHING);
+            media.addOption(":file-caching=" + fileCachingMs);
         }
         return media;
     }
@@ -1357,7 +1399,7 @@ public class PlayerActivity extends AppCompatActivity {
                 }
             }
         } else if (sourceMode == SourceMode.DIRECT_REMOTE) {
-            text.append("\nбуфер libVLC · ").append(NET_CACHING / 1000).append(" с");
+            text.append("\nбуфер libVLC · ").append(networkCachingMs / 1000).append(" с");
         }
 
         text.append("\n").append(decoderNames[Math.max(0, Math.min(decoderMode, decoderNames.length - 1))])
@@ -1405,6 +1447,26 @@ public class PlayerActivity extends AppCompatActivity {
         }
     }
 
+    private void showLocalCacheStartupProgress() {
+        if (!localCacheStartupWaiting || sourceMode != SourceMode.LOCAL_CACHE) return;
+        showBuffering("Запуск из кэша: " + cacheProgressLine(cacheTask, false));
+    }
+
+    private void updateLocalCacheStartupUi() {
+        if (!localCacheStartupWaiting) return;
+        if (sourceMode != SourceMode.LOCAL_CACHE || player == null) {
+            localCacheStartupWaiting = false;
+            return;
+        }
+        long movedFromStart = Math.max(0L, currentMs - localCacheStartupBaseMs);
+        if (movedFromStart >= 1000L) {
+            localCacheStartupWaiting = false;
+            hideBuffering();
+            return;
+        }
+        showLocalCacheStartupProgress();
+    }
+
     private void updateTime() {
         if (player == null) return;
         duration = player.getLength();
@@ -1412,6 +1474,7 @@ public class PlayerActivity extends AppCompatActivity {
         time.setText(Util.fmtTime(currentMs) + " / " + Util.fmtTime(duration));
         if (duration > 0 && !dragging) seek.setProgress((int) (currentMs * 1000 / duration));
         updateCacheProgressUi();
+        updateLocalCacheStartupUi();
         if (player.isPlaying()) savePosition(false);
         updateTechnicalCard(false);
         updatePlaybackState();

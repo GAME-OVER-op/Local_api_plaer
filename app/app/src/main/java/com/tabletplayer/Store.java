@@ -14,6 +14,16 @@ public class Store {
     static final String KEY_VOLUME = "boost_volume";
     static final String KEY_ASPECT = "aspect_mode";
     static final String KEY_DECODER_MODE = "decoder_mode";
+    static final String KEY_LIBVLC_CATCH_UP_FRAMES = "libvlc_catch_up_frames";
+    static final String KEY_LIBVLC_AVCODEC_FAST = "libvlc_avcodec_fast";
+    static final String KEY_LIBVLC_SKIP_LOOP_FILTER = "libvlc_skip_loop_filter";
+    static final String KEY_LIBVLC_NETWORK_CACHING = "libvlc_network_caching";
+    static final String KEY_LIBVLC_FILE_CACHING = "libvlc_file_caching";
+    static final String KEY_LIBVLC_LOCAL_CACHING = "libvlc_local_caching";
+
+    public static final int LIBVLC_DEFAULT_CACHING_MS = 4000;
+    private static final int LIBVLC_MIN_CACHING_MS = 300;
+    private static final int LIBVLC_MAX_CACHING_MS = 60000;
 
     private static String watchedRaw = null;
     private static Set<String> watchedCache = null;
@@ -120,5 +130,74 @@ public class Store {
 
     public static void setDecoderMode(Context c, int v) {
         App.prefs(c).edit().putInt(KEY_DECODER_MODE, v).apply();
+    }
+
+    public static boolean getLibVlcCatchUpFrames(Context c) {
+        return App.prefs(c).getBoolean(KEY_LIBVLC_CATCH_UP_FRAMES, true);
+    }
+
+    public static void setLibVlcCatchUpFrames(Context c, boolean enabled) {
+        App.prefs(c).edit().putBoolean(KEY_LIBVLC_CATCH_UP_FRAMES, enabled).apply();
+    }
+
+    public static boolean getLibVlcAvcodecFast(Context c) {
+        return App.prefs(c).getBoolean(KEY_LIBVLC_AVCODEC_FAST, false);
+    }
+
+    public static void setLibVlcAvcodecFast(Context c, boolean enabled) {
+        App.prefs(c).edit().putBoolean(KEY_LIBVLC_AVCODEC_FAST, enabled).apply();
+    }
+
+    public static String getLibVlcSkipLoopFilter(Context c) {
+        String v = App.prefs(c).getString(KEY_LIBVLC_SKIP_LOOP_FILTER, "off");
+        if ("nonref".equals(v) || "bidir".equals(v) || "all".equals(v)) return v;
+        return "off";
+    }
+
+    public static void setLibVlcSkipLoopFilter(Context c, String value) {
+        String v = ("nonref".equals(value) || "bidir".equals(value) || "all".equals(value)) ? value : "off";
+        App.prefs(c).edit().putString(KEY_LIBVLC_SKIP_LOOP_FILTER, v).apply();
+    }
+
+    public static int getLibVlcNetworkCaching(Context c) {
+        return clampCaching(App.prefs(c).getInt(KEY_LIBVLC_NETWORK_CACHING, LIBVLC_DEFAULT_CACHING_MS));
+    }
+
+    public static void setLibVlcNetworkCaching(Context c, int value) {
+        App.prefs(c).edit().putInt(KEY_LIBVLC_NETWORK_CACHING, clampCaching(value)).apply();
+    }
+
+    public static int getLibVlcFileCaching(Context c) {
+        return clampCaching(App.prefs(c).getInt(KEY_LIBVLC_FILE_CACHING, LIBVLC_DEFAULT_CACHING_MS));
+    }
+
+    public static void setLibVlcFileCaching(Context c, int value) {
+        App.prefs(c).edit().putInt(KEY_LIBVLC_FILE_CACHING, clampCaching(value)).apply();
+    }
+
+    public static int getLibVlcLocalCaching(Context c) {
+        return clampCaching(App.prefs(c).getInt(KEY_LIBVLC_LOCAL_CACHING, LIBVLC_DEFAULT_CACHING_MS));
+    }
+
+    public static void setLibVlcLocalCaching(Context c, int value) {
+        App.prefs(c).edit().putInt(KEY_LIBVLC_LOCAL_CACHING, clampCaching(value)).apply();
+    }
+
+    public static void resetLibVlcSettings(Context c) {
+        App.prefs(c).edit()
+                .putInt(KEY_DECODER_MODE, 0)
+                .putBoolean(KEY_LIBVLC_CATCH_UP_FRAMES, true)
+                .putBoolean(KEY_LIBVLC_AVCODEC_FAST, false)
+                .putString(KEY_LIBVLC_SKIP_LOOP_FILTER, "off")
+                .putInt(KEY_LIBVLC_NETWORK_CACHING, LIBVLC_DEFAULT_CACHING_MS)
+                .putInt(KEY_LIBVLC_FILE_CACHING, LIBVLC_DEFAULT_CACHING_MS)
+                .putInt(KEY_LIBVLC_LOCAL_CACHING, LIBVLC_DEFAULT_CACHING_MS)
+                .apply();
+    }
+
+    public static int clampCaching(int value) {
+        if (value < LIBVLC_MIN_CACHING_MS) return LIBVLC_MIN_CACHING_MS;
+        if (value > LIBVLC_MAX_CACHING_MS) return LIBVLC_MAX_CACHING_MS;
+        return value;
     }
 }
