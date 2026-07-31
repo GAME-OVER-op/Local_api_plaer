@@ -356,21 +356,8 @@ public class PlayerActivity extends AppCompatActivity {
         ArrayList<String> options = new ArrayList<>();
         options.add("--network-caching=" + NET_CACHING);
         options.add("--file-caching=" + LOCAL_CACHING);
-        // Старое поведение: не выбрасывать опоздавшие кадры, а догонять таймлайн.
-        options.add("--no-drop-late-frames");
-        options.add("--no-skip-frames");
-        try {
-            libVLC = new LibVLC(this, options);
-            PlaybackDiagnostics.log(this, "libvlc init frame-drop disabled");
-        } catch (RuntimeException | LinkageError error) {
-            // Не роняем Activity, если конкретная сборка libVLC не знает
-            // необязательные параметры управления опоздавшими кадрами.
-            PlaybackDiagnostics.log(this, "libvlc option fallback: " + error);
-            ArrayList<String> fallback = new ArrayList<>();
-            fallback.add("--network-caching=" + NET_CACHING);
-            fallback.add("--file-caching=" + LOCAL_CACHING);
-            libVLC = new LibVLC(this, fallback);
-        }
+        libVLC = new LibVLC(this, options);
+        PlaybackDiagnostics.log(this, "libvlc init standard frame skipping");
     }
 
     private MediaPlayer createPlayer(final int generation) {
