@@ -166,6 +166,8 @@ public class PlayerActivity extends AppCompatActivity {
         super.onCreate(b);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_player);
+        installFullscreenGuards();
+        scheduleImmersiveReapply();
 
         base = getIntent().getStringExtra("base");
         path = getIntent().getStringExtra("path");
@@ -1253,7 +1255,14 @@ public class PlayerActivity extends AppCompatActivity {
         final GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onSingleTapConfirmed(MotionEvent e) {
-                if (isTopDeadZone(e)) return false;
+                if (isTopDeadZone(e)) {
+                    if (controlsVisible) {
+                        hideControls();
+                        return true;
+                    }
+                    scheduleImmersiveReapply();
+                    return false;
+                }
                 if (controlsVisible) hideControls();
                 else showControls();
                 return true;
@@ -1314,18 +1323,23 @@ public class PlayerActivity extends AppCompatActivity {
                 ignoreGestureSequence = isTopDeadZone(ev);
                 if (ignoreGestureSequence) {
                     PlayerDiagnostics.log(this, "gesture", "ignored top zone y=" + ev.getY());
-                    return false;
+                    scheduleImmersiveReapply();
+                    return true;
                 }
             }
             if (!ignoreGestureSequence) gd.onTouchEvent(ev);
             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                if (ignoreGestureSequence && controlsVisible && action == MotionEvent.ACTION_UP) {
+                    hideControls();
+                }
                 if (dragging && mode == 1 && player != null) requestSeek(seekPreview);
                 if (dragging) gestureInfo.setVisibility(View.GONE);
                 dragging = false;
                 mode = 0;
                 ignoreGestureSequence = false;
+                scheduleImmersiveReapply();
             }
-            return !ignoreGestureSequence;
+            return true;
         });
     }
 
@@ -1420,30 +1434,65 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void showControls() {
-        controls.setVisibility(View.VISIBLE);
-        titleBar.setVisibility(View.VISIBLE);
-        controlsVisible = true;
-        updateTechnicalCard(true);
-        ui.removeCallbacks(hideRunnable);
-        ui.postDelayed(hideRunnable, AUTO_HIDE_MS);
+        setControlsVisible(true);
     }
 
     private void hideControls() {
-        controls.setVisibility(View.GONE);
-        titleBar.setVisibility(View.GONE);
-        if (technicalCard != null) technicalCard.setVisibility(View.GONE);
-        controlsVisible = false;
+        setControlsVisible(false);
+    }
+
+    private void setControlsVisible(boolean visible) {
+        controlsVisible = visible;
+        if (controls != null) controls.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (titleBar != null) titleBar.setVisibility(visible ? View.VISIBLE : View.GONE);
+        if (technicalCard != null) {
+            if (visible) updateTechnicalCard(true);
+            else technicalCard.setVisibility(View.GONE);
+        }
+
+        ui.removeCallbacks(hideRunnable);
+        if (visible) {
+            ui.postDelayed(hideRunnable, AUTO_HIDE_MS);
+        }
+        scheduleImmersiveReapply();
     }
 
     private void toggleImmersive() {
         immersive = !immersive;
         applyImmersive();
+        scheduleImmersiveReapply();
         fullscreen.setImageResource(immersive ? R.drawable.ic_fullscreen_exit : R.drawable.ic_fullscreen);
     }
 
+    private void installFullscreenGuards() {
+        final View decor = getWindow().getDecorView();
+        decor.setOnSystemUiVisibilityChangeListener(visibility -> {
+            if (!immersive || destroyed) return;
+            // Android can reveal status/nav bars after taps, swipes, dialogs, or focus changes.
+            // Return to sticky immersive shortly after the system finishes its own animation.
+            scheduleImmersiveReapply();
+        });
+    }
+
+    private void scheduleImmersiveReapply() {
+        if (!immersive || destroyed) return;
+        ui.removeCallbacks(immersiveReapplyImmediate);
+        ui.removeCallbacks(immersiveReapplyShort);
+        ui.removeCallbacks(immersiveReapplyLong);
+        ui.post(immersiveReapplyImmediate);
+        ui.postDelayed(immersiveReapplyShort, 80L);
+        ui.postDelayed(immersiveReapplyLong, 350L);
+    }
+
+    private final Runnable immersiveReapplyImmediate = this::applyImmersive;
+    private final Runnable immersiveReapplyShort = this::applyImmersive;
+    private final Runnable immersiveReapplyLong = this::applyImmersive;
+
     private void applyImmersive() {
+        if (destroyed) return;
         View d = getWindow().getDecorView();
         if (immersive) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
             d.setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                             | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -1452,6 +1501,7 @@ public class PlayerActivity extends AppCompatActivity {
                             | View.SYSTEM_UI_FLAG_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
             d.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
         }
     }
@@ -1507,14 +1557,14 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus && immersive) applyImmersive();
+        if (hasFocus && immersive) scheduleImmersiveReapply();
     }
 
     @Override
     protected void onStart() {
         super.onStart();
         ui.post(ticker);
-        applyImmersive();
+        scheduleImmersiveReapply();
         attachVideoViewsIfNeeded();
         ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); }, 180L);
     }
@@ -1522,6 +1572,7 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        scheduleImmersiveReapply();
         attachVideoViewsIfNeeded();
         ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); }, 220L);
         PlayerDiagnostics.log(this, "lifecycle", "resume wasPlaying=" + wasPlayingBeforeStop);
@@ -1530,7 +1581,8 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); }, 180L);
+        scheduleImmersiveReapply();
+        ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); scheduleImmersiveReapply(); }, 180L);
         PlayerDiagnostics.log(this, "config", "orientation=" + newConfig.orientation + " aspect=" + aspectIdx);
     }
 
