@@ -191,24 +191,13 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         return isRangeAvailable(start, end);
     }
 
-    /** Срочно планирует окно загрузки от позиции перемотки, не добивая путь до неё. */
+    /**
+     * Раньше здесь создавалось срочное окно загрузки от позиции перемотки.
+     * На слабых устройствах это вызывало подвисания, поэтому дальний seek теперь
+     * только ждёт обычную постепенную догрузку без прыжка загрузчика вперёд.
+     */
     public void requestSeekWindow(long startByte, long minAheadBytes) {
-        long total = totalBytes();
-        if (total <= 0) return;
-        long s = Math.max(0, Math.min(total - 1L, startByte));
-        long ahead = Math.max(Math.max(minAheadBytes, seekInitialWindowBytes(total)), chunkSizeFor(total));
-        synchronized (lock) {
-            seekFocusStartBytes = s;
-            seekFocusScheduledUntilBytes = s;
-            long urgentEnd = Math.min(total, s + ahead);
-            if (s > entry.downloadedBytes + playbackWindowBytes(total) / 2L) {
-                dropPendingChunksOutsideLocked(s, urgentEnd);
-            }
-            scheduleRangeLocked(s, urgentEnd, true);
-            lock.notifyAll();
-        }
-        PlayerDiagnostics.log(context, "cache-seek-window", "start=" + s + " ahead=" + ahead + " total=" + total);
-        maybeNotifyProgress();
+        PlayerDiagnostics.log(context, "cache-seek-window", "ignored start=" + startByte + " ahead=" + minAheadBytes);
     }
 
     public long recentSpeedBytesPerSec() {
@@ -659,17 +648,8 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         }
 
         long window = playbackWindowBytes(total);
-        if (seekFocusStartBytes >= 0) {
-            long focusEnd = contiguousEndFromLocked(seekFocusStartBytes);
-            long base = Math.max(Math.max(focusEnd, seekFocusScheduledUntilBytes), seekFocusStartBytes);
-            long wanted = Math.min(total, base + window);
-            if (seekFocusScheduledUntilBytes < wanted) {
-                scheduleRangeLocked(seekFocusScheduledUntilBytes, wanted, true);
-            }
-            // После дальнего seek не продолжаем грузить старый путь до новой позиции.
-            if (seekFocusStartBytes > entry.downloadedBytes + window) return;
-        }
-
+        // Дальний seek больше не переносит фокус загрузки вперёд: продолжаем
+        // плавно расширять окно от непрерывно доступного кэша.
         long base = Math.max(entry.downloadedBytes, scheduledUntilBytes);
         long wanted = Math.min(total, base + window);
         if (scheduledUntilBytes < wanted) scheduleRangeLocked(scheduledUntilBytes, wanted, false);
@@ -789,8 +769,9 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         long e = Math.max(s, Math.min(total - 1L, endInclusive));
         long deadline = System.currentTimeMillis() + timeoutMs;
         synchronized (lock) {
-            scheduleRangeLocked(s, Math.min(total, e + 1L), s > entry.downloadedBytes + playbackWindowBytes(total) / 2L);
             while (!cancelled && error == null && !isRangeAvailableLocked(s, e) && !complete) {
+                // Не планируем срочный дальний Range по запросу proxy/libVLC.
+                // Загрузчик сам постепенно расширяет ближайшее окно вперёд.
                 maybeScheduleWindowLocked(total);
                 long left = deadline - System.currentTimeMillis();
                 if (left <= 0) break;

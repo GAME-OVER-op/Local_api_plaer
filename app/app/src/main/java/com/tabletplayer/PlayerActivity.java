@@ -771,8 +771,8 @@ public class PlayerActivity extends AppCompatActivity {
             long extra = 32L * 1024L * 1024L;
             if (!cacheTask.hasBytesForTime(targetMs, duration, extra)) {
                 cacheSeekWaitMs = targetMs;
-                long seekByte = cacheTask.bytesForTime(targetMs, duration);
-                cacheTask.requestSeekWindow(seekByte, extra);
+                // Не создаём срочное окно от новой позиции: на слабых устройствах это даёт подвисания.
+                // Ждём, пока обычная последовательная/оконная дозагрузка сама дойдёт до выбранного места.
                 setPlaying(false);
                 showBuffering("Ожидание кэша: " + cacheProgressLine(cacheTask, false) + " · переход " + Util.fmtTime(targetMs));
                 return;
@@ -797,7 +797,6 @@ public class PlayerActivity extends AppCompatActivity {
         }
         if (cacheSeekWaitMs > 0) {
             long seekExtra = 32L * 1024L * 1024L;
-            cacheTask.requestSeekWindow(cacheTask.bytesForTime(cacheSeekWaitMs, duration), seekExtra);
             boolean ready = cacheTask.hasBytesForTime(cacheSeekWaitMs, duration, seekExtra);
             if (ready) {
                 long target = cacheSeekWaitMs;
@@ -911,6 +910,12 @@ public class PlayerActivity extends AppCompatActivity {
             return;
         }
         if (sourceMode == SourceMode.LOCAL_CACHE) {
+            if (cacheSeekWaitMs > 0 && cacheTask != null) {
+                terminalHandled = false;
+                setPlaying(false);
+                showBuffering("Ожидание кэша: " + cacheProgressLine(cacheTask, false) + " · переход " + Util.fmtTime(cacheSeekWaitMs));
+                return;
+            }
             fallbackToDirect("ошибка локального кэша");
             return;
         }
