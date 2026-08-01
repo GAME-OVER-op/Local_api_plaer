@@ -493,6 +493,8 @@ public class PlayerActivity extends AppCompatActivity {
         }
         try {
         session = new MediaSessionCompat(this, "TabletPlayer");
+        session.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
+                | MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS);
         session.setCallback(new MediaSessionCompat.Callback() {
             @Override
             public void onPlay() {
@@ -550,20 +552,37 @@ public class PlayerActivity extends AppCompatActivity {
     private boolean handleMediaButton(Intent mediaButtonEvent) {
         if (mediaButtonEvent == null) return false;
         KeyEvent ev = mediaButtonEvent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
+        return handleMediaKeyEvent(ev, "session");
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (handleMediaKeyEvent(event, "dispatch")) return true;
+        return super.dispatchKeyEvent(event);
+    }
+
+    private boolean handleMediaKeyEvent(KeyEvent ev, String source) {
         if (ev == null) return false;
-        int action = ev.getAction();
         int code = ev.getKeyCode();
-        if (action != KeyEvent.ACTION_UP) return true;
+        if (!isMediaKey(code)) return false;
+
+        // Many Bluetooth headsets reliably send ACTION_DOWN, while ACTION_UP may be delayed
+        // or not routed through MediaSession on old Android builds. Act once on DOWN and
+        // consume UP so a single press cannot toggle twice.
+        if (ev.getAction() == KeyEvent.ACTION_UP) return true;
+        if (ev.getAction() != KeyEvent.ACTION_DOWN) return true;
         if (ev.getRepeatCount() > 0) return true;
 
         long now = System.currentTimeMillis();
         if (code == lastMediaButtonKey && now - lastMediaButtonAt < 650L) {
-            PlayerDiagnostics.log(this, "media-button", "ignored double key=" + code);
+            PlayerDiagnostics.log(this, "media-button", "ignored double source=" + source + " key=" + code);
             return true;
         }
         lastMediaButtonAt = now;
         lastMediaButtonKey = code;
 
+        PlayerDiagnostics.log(this, "media-button", "source=" + source + " key=" + code
+                + " playing=" + (player != null && player.isPlaying()));
         switch (code) {
             case KeyEvent.KEYCODE_HEADSETHOOK:
             case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
@@ -576,6 +595,23 @@ public class PlayerActivity extends AppCompatActivity {
             case KeyEvent.KEYCODE_MEDIA_STOP:
                 setPlaying(false);
                 return true;
+            case KeyEvent.KEYCODE_MEDIA_NEXT:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                // Do not map double/triple headset clicks to gestures or episode switching.
+                updatePlaybackState();
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    private boolean isMediaKey(int code) {
+        switch (code) {
+            case KeyEvent.KEYCODE_HEADSETHOOK:
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_STOP:
             case KeyEvent.KEYCODE_MEDIA_NEXT:
             case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
                 return true;
@@ -1627,6 +1663,9 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
+        if (session != null) {
+            try { session.setActive(true); updatePlaybackState(); } catch (Throwable ignored) {}
+        }
         ui.post(ticker);
         scheduleImmersiveReapply();
         attachVideoViewsIfNeeded();
@@ -1636,6 +1675,9 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (session != null) {
+            try { session.setActive(true); updatePlaybackState(); } catch (Throwable ignored) {}
+        }
         scheduleImmersiveReapply();
         attachVideoViewsIfNeeded();
         ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); }, 220L);
