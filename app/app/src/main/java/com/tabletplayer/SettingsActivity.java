@@ -14,6 +14,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SwitchCompat;
 
 public class SettingsActivity extends AppCompatActivity {
+    private static final String[] CONTENT_LOAD_LABELS = {"Авто", "Локальный кэш", "Прямой поток"};
     private static final String[] DECODER_LABELS = {"Автоматически", "Аппаратный", "Программный"};
     private static final String[] SKIP_LOOP_LABELS = {"Выкл", "nonref", "bidir", "all"};
     private static final String[] SKIP_LOOP_VALUES = {"off", "nonref", "bidir", "all"};
@@ -44,6 +45,12 @@ public class SettingsActivity extends AppCompatActivity {
             App.setDark(this, checked);
             recreate();
         });
+
+        Spinner contentLoadSpinner = findViewById(R.id.content_load_mode_spinner);
+        ArrayAdapter<String> contentLoadAdapter = labelAdapter(CONTENT_LOAD_LABELS);
+        contentLoadSpinner.setAdapter(contentLoadAdapter);
+        contentLoadSpinner.setSelection(Store.getContentLoadMode(this));
+        contentLoadSpinner.setOnItemSelectedListener(new SimpleItemSelectedListener(position -> Store.setContentLoadMode(this, position)));
 
         Spinner decoderSpinner = findViewById(R.id.decoder_spinner);
         ArrayAdapter<String> decoderAdapter = labelAdapter(DECODER_LABELS);
@@ -82,6 +89,7 @@ public class SettingsActivity extends AppCompatActivity {
         Button reset = findViewById(R.id.reset_libvlc_btn);
         reset.setOnClickListener(v -> {
             Store.resetLibVlcSettings(this);
+            contentLoadSpinner.setSelection(Store.CONTENT_LOAD_AUTO);
             decoderSpinner.setSelection(0);
             catchUpSwitch.setChecked(true);
             fastSwitch.setChecked(false);

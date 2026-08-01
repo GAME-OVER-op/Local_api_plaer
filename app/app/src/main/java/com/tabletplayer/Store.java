@@ -22,11 +22,16 @@ public class Store {
     static final String KEY_LIBVLC_LOCAL_CACHING = "libvlc_local_caching";
     static final String KEY_PLAYBACK_CACHE_THREADS = "playback_cache_threads";
     static final String KEY_PLAYBACK_PREFETCH_THREADS = "playback_prefetch_threads";
+    static final String KEY_CONTENT_LOAD_MODE = "content_load_mode";
+
+    public static final int CONTENT_LOAD_AUTO = 0;
+    public static final int CONTENT_LOAD_LOCAL_CACHE = 1;
+    public static final int CONTENT_LOAD_DIRECT = 2;
 
     public static final int LIBVLC_DEFAULT_CACHING_MS = 4000;
     private static final int LIBVLC_MIN_CACHING_MS = 300;
     private static final int LIBVLC_MAX_CACHING_MS = 60000;
-    public static final int PLAYBACK_CACHE_DEFAULT_THREADS = 12;
+    public static final int PLAYBACK_CACHE_DEFAULT_THREADS = 8;
     public static final int PLAYBACK_PREFETCH_DEFAULT_THREADS = 3;
     public static final int PLAYBACK_CACHE_MAX_THREADS = 12;
     public static final int PLAYBACK_PREFETCH_MAX_THREADS = 6;
@@ -198,9 +203,23 @@ public class Store {
                 .putInt(KEY_LIBVLC_NETWORK_CACHING, LIBVLC_DEFAULT_CACHING_MS)
                 .putInt(KEY_LIBVLC_FILE_CACHING, LIBVLC_DEFAULT_CACHING_MS)
                 .putInt(KEY_LIBVLC_LOCAL_CACHING, LIBVLC_DEFAULT_CACHING_MS)
+                .putInt(KEY_CONTENT_LOAD_MODE, CONTENT_LOAD_AUTO)
                 .putInt(KEY_PLAYBACK_CACHE_THREADS, PLAYBACK_CACHE_DEFAULT_THREADS)
                 .putInt(KEY_PLAYBACK_PREFETCH_THREADS, PLAYBACK_PREFETCH_DEFAULT_THREADS)
                 .apply();
+    }
+
+    public static int getContentLoadMode(Context c) {
+        return clampContentLoadMode(App.prefs(c).getInt(KEY_CONTENT_LOAD_MODE, CONTENT_LOAD_AUTO));
+    }
+
+    public static void setContentLoadMode(Context c, int value) {
+        App.prefs(c).edit().putInt(KEY_CONTENT_LOAD_MODE, clampContentLoadMode(value)).apply();
+    }
+
+    public static int clampContentLoadMode(int value) {
+        if (value == CONTENT_LOAD_LOCAL_CACHE || value == CONTENT_LOAD_DIRECT) return value;
+        return CONTENT_LOAD_AUTO;
     }
 
     public static int getPlaybackCacheThreads(Context c) {

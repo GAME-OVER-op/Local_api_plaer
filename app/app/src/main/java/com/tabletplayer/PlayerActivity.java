@@ -97,6 +97,7 @@ public class PlayerActivity extends AppCompatActivity {
     private int networkCachingMs = Store.LIBVLC_DEFAULT_CACHING_MS;
     private int fileCachingMs = Store.LIBVLC_DEFAULT_CACHING_MS;
     private int localCachingMs = Store.LIBVLC_DEFAULT_CACHING_MS;
+    private int contentLoadMode = Store.CONTENT_LOAD_AUTO;
     private boolean libVlcCatchUpFrames = true;
     private boolean libVlcAvcodecFast = false;
     private String libVlcSkipLoopFilter = "off";
@@ -122,6 +123,8 @@ public class PlayerActivity extends AppCompatActivity {
     private String cacheProxyUrl;
     private String currentMediaOverrideUri;
     private long cacheSeekWaitMs = 0;
+    private long cacheSeekStartedAtMs = 0;
+    private long cacheSeekTargetEndBytes = 0;
     private boolean directFallbackInProgress = false;
     private final Set<String> directOnlyThisSession = new HashSet<>();
     private Thread prefetchThread;
@@ -285,6 +288,7 @@ public class PlayerActivity extends AppCompatActivity {
         networkCachingMs = Store.getLibVlcNetworkCaching(this);
         fileCachingMs = Store.getLibVlcFileCaching(this);
         localCachingMs = Store.getLibVlcLocalCaching(this);
+        contentLoadMode = Store.getContentLoadMode(this);
         libVlcCatchUpFrames = Store.getLibVlcCatchUpFrames(this);
         libVlcAvcodecFast = Store.getLibVlcAvcodecFast(this);
         libVlcSkipLoopFilter = Store.getLibVlcSkipLoopFilter(this);
@@ -634,7 +638,11 @@ public class PlayerActivity extends AppCompatActivity {
             startPrefetchWindow();
             return;
         }
-        if (shouldUseDirect(resume, p)) {
+        if (contentLoadMode == Store.CONTENT_LOAD_DIRECT) {
+            startDirectPlayback(p, nm, resume, false);
+        } else if (contentLoadMode == Store.CONTENT_LOAD_LOCAL_CACHE) {
+            startCachePlayback(p, nm, resume);
+        } else if (shouldUseDirect(resume, p)) {
             startDirectPlayback(p, nm, resume, false);
         } else {
             startCachePlayback(p, nm, resume);
@@ -714,6 +722,37 @@ public class PlayerActivity extends AppCompatActivity {
         return text.toString();
     }
 
+    private String cacheSeekWaitMessage() {
+        String line = cacheTask != null ? cacheProgressLine(cacheTask, false) : "0 Б / 0 Б";
+        StringBuilder sb = new StringBuilder();
+        sb.append("Ожидание кэша: ").append(line);
+        if (cacheSeekWaitMs > 0) sb.append(" · переход ").append(Util.fmtTime(cacheSeekWaitMs));
+        long eta = estimateCacheSeekEtaMs();
+        if (eta > 0 && eta < 10L * 60L * 1000L) sb.append(" · ~").append(Math.max(1L, eta / 1000L)).append(" с");
+        return sb.toString();
+    }
+
+    private long estimateCacheSeekEtaMs() {
+        if (cacheTask == null || cacheSeekTargetEndBytes <= 0) return -1L;
+        long available = Math.max(0L, cacheTask.downloadedBytes());
+        long remaining = Math.max(0L, cacheSeekTargetEndBytes - available);
+        if (remaining <= 0) return 0L;
+        long speed = cacheTask.recentSpeedBytesPerSec();
+        if (speed <= 0) return -1L;
+        return remaining * 1000L / Math.max(1L, speed);
+    }
+
+    private boolean shouldFallbackSeekWaitToDirect() {
+        if (contentLoadMode == Store.CONTENT_LOAD_LOCAL_CACHE) return false;
+        if (cacheSeekWaitMs <= 0 || cacheSeekStartedAtMs <= 0 || cacheTask == null) return false;
+        long elapsed = System.currentTimeMillis() - cacheSeekStartedAtMs;
+        if (elapsed < 5000L) return false;
+        long speed = cacheTask.recentSpeedBytesPerSec();
+        long eta = estimateCacheSeekEtaMs();
+        if (elapsed >= 12000L && speed < 384L * 1024L) return true;
+        return eta > 30000L;
+    }
+
     private void startFromLocalCache(PlaybackCacheTask task, long resume) {
         if (destroyed || task == null || task != cacheTask || sourceMode == SourceMode.LOCAL_CACHE) return;
         try {
@@ -728,13 +767,21 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void fallbackToDirect(String reason) {
+        long pos = cacheSeekWaitMs > 0 ? cacheSeekWaitMs : -1L;
+        fallbackToDirect(reason, pos);
+    }
+
+    private void fallbackToDirect(String reason, long forcedPositionMs) {
         if (destroyed || directFallbackInProgress) return;
         directFallbackInProgress = true;
-        PlayerDiagnostics.log(this, "fallback", reason + " pos=" + currentMs + " path=" + path);
         String p = path;
         String nm = name;
-        long pos = currentMs > 0 ? currentMs : pendingResumeMs;
+        long pos = forcedPositionMs >= 0 ? forcedPositionMs : (currentMs > 0 ? currentMs : pendingResumeMs);
+        PlayerDiagnostics.log(this, "fallback", reason + " pos=" + pos + " path=" + path);
         if (p != null) directOnlyThisSession.add(p);
+        cacheSeekWaitMs = 0;
+        cacheSeekStartedAtMs = 0;
+        cacheSeekTargetEndBytes = 0;
         showBuffering("Запуск прямого воспроизведения…");
         stopPlaybackCache(false);
         startSource(p, nm, pos, SourceMode.DIRECT_REMOTE, true);
@@ -759,6 +806,8 @@ public class PlayerActivity extends AppCompatActivity {
         }
         activeCacheEntry = null;
         cacheSeekWaitMs = 0;
+        cacheSeekStartedAtMs = 0;
+        cacheSeekTargetEndBytes = 0;
         if (cacheBadge != null) cacheBadge.setVisibility(View.GONE);
     }
 
@@ -771,14 +820,19 @@ public class PlayerActivity extends AppCompatActivity {
             long extra = 32L * 1024L * 1024L;
             if (!cacheTask.hasBytesForTime(targetMs, duration, extra)) {
                 cacheSeekWaitMs = targetMs;
+                cacheSeekStartedAtMs = System.currentTimeMillis();
+                long startByte = cacheTask.bytesForTime(targetMs, duration);
+                cacheSeekTargetEndBytes = Math.min(Math.max(1L, cacheTask.totalBytes()), startByte + extra);
                 // Не создаём срочное окно от новой позиции: на слабых устройствах это даёт подвисания.
-                // Ждём, пока обычная последовательная/оконная дозагрузка сама дойдёт до выбранного места.
+                // Ждём обычную догрузку, но в режиме Auto через 5–12 секунд считаем ETA.
                 setPlaying(false);
-                showBuffering("Ожидание кэша: " + cacheProgressLine(cacheTask, false) + " · переход " + Util.fmtTime(targetMs));
+                showBuffering(cacheSeekWaitMessage());
                 return;
             }
         }
         cacheSeekWaitMs = 0;
+        cacheSeekStartedAtMs = 0;
+        cacheSeekTargetEndBytes = 0;
         player.setTime(targetMs);
     }
 
@@ -807,7 +861,11 @@ public class PlayerActivity extends AppCompatActivity {
                     setPlaying(true);
                 }
             } else {
-                showBuffering("Ожидание кэша: " + cacheProgressLine(cacheTask, false) + " · переход " + Util.fmtTime(cacheSeekWaitMs));
+                if (shouldFallbackSeekWaitToDirect()) {
+                    fallbackToDirect("кэш не успевает к перемотке", cacheSeekWaitMs);
+                    return;
+                }
+                showBuffering(cacheSeekWaitMessage());
             }
         }
         if (cacheBadge != null) {

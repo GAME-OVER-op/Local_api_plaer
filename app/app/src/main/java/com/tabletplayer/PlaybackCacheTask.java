@@ -6,6 +6,8 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.util.Arrays;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayDeque;
@@ -40,8 +42,8 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private static final long MIN_KEEP_WAIT_SPEED_BYTES_PER_SEC = 512L * 1024L;
     private static final int BUFFER_SIZE = 256 * 1024;
     private static final int MAX_CHUNK_RETRIES = 3;
-    private static final long RAM_BUFFER_MIN_BYTES = 16L * MB;
-    private static final long RAM_BUFFER_MAX_BYTES = 48L * MB;
+    private static final long RAM_BUFFER_MIN_BYTES = 8L * MB;
+    private static final long RAM_BUFFER_MAX_BYTES = 24L * MB;
     private static final long UI_PROGRESS_INTERVAL_MS = 800L;
 
     private static final int CHUNK_PENDING = 0;
@@ -78,6 +80,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private long networkReceivedBytes;
     private long diskWrittenBytes;
     private long queuedWriteBytes;
+    private int activeChunkDownloads;
     private long maxRamBufferBytes;
     private long lastSpeedUpdateMs;
     private long lastSpeedBytes;
@@ -145,7 +148,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     public int workerCount() {
         long total = totalBytes();
         int cap = prefetch ? Store.getPlaybackPrefetchThreads(context) : Store.getPlaybackCacheThreads(context);
-        int auto = prefetch ? Math.min(cap, 3) : autoWorkerCount(total);
+        int auto = prefetch ? 1 : autoWorkerCount(total);
         if (!prefetch) return Math.max(3, Math.min(cap, auto));
         return Math.max(1, Math.min(cap, auto));
     }
@@ -251,6 +254,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
                 networkReceivedBytes = 0;
                 diskWrittenBytes = 0;
                 queuedWriteBytes = 0;
+                activeChunkDownloads = 0;
                 maxRamBufferBytes = maxRamBufferBytesFor(total);
                 lastSpeedUpdateMs = 0;
                 lastSpeedBytes = 0;
@@ -389,16 +393,20 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             if (chunk == null) return;
             boolean ok = false;
             Exception last = null;
-            for (int attempt = 1; attempt <= MAX_CHUNK_RETRIES && !cancelled; attempt++) {
-                try {
-                    downloadChunk(chunk);
-                    ok = true;
-                    break;
-                } catch (Exception e) {
-                    last = e;
-                    PlayerDiagnostics.log(context, prefetch ? "prefetch-retry" : "cache-retry", "worker=" + workerIndex + " range=" + chunk.start + "-" + chunk.end + " attempt=" + attempt + " err=" + e.getMessage());
-                    try { Thread.sleep(200L * attempt); } catch (InterruptedException ignored) { break; }
+            try {
+                for (int attempt = 1; attempt <= MAX_CHUNK_RETRIES && !cancelled; attempt++) {
+                    try {
+                        downloadChunk(chunk);
+                        ok = true;
+                        break;
+                    } catch (Exception e) {
+                        last = e;
+                        PlayerDiagnostics.log(context, prefetch ? "prefetch-retry" : "cache-retry", "worker=" + workerIndex + " range=" + chunk.start + "-" + chunk.end + " attempt=" + attempt + " err=" + e.getMessage());
+                        try { Thread.sleep(200L * attempt); } catch (InterruptedException ignored) { break; }
+                    }
                 }
+            } finally {
+                releaseActiveChunkDownload();
             }
             if (!ok && !cancelled) {
                 synchronized (lock) {
@@ -421,10 +429,20 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         synchronized (lock) {
             while (!cancelled && error == null) {
                 maybeScheduleWindowLocked(total);
+                if (activeChunkDownloads >= maxActiveWorkersLocked(total)) {
+                    try {
+                        lock.wait(300L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return null;
+                    }
+                    continue;
+                }
                 Chunk c = pendingChunks.pollFirst();
                 if (c != null) {
                     if (c.state == CHUNK_PENDING) {
                         c.state = CHUNK_IN_FLIGHT;
+                        activeChunkDownloads++;
                         return c;
                     }
                     continue;
@@ -440,6 +458,25 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             }
             return null;
         }
+    }
+
+    private void releaseActiveChunkDownload() {
+        synchronized (lock) {
+            if (activeChunkDownloads > 0) activeChunkDownloads--;
+            lock.notifyAll();
+        }
+    }
+
+    private int maxActiveWorkersLocked(long total) {
+        if (prefetch) return 1;
+        int configured = Store.getPlaybackCacheThreads(context);
+        if (!readyNotified) return Math.max(3, Math.min(configured, autoWorkerCount(total)));
+        int steady;
+        if (total <= 256L * MB) steady = 4;
+        else if (total <= 1024L * MB) steady = 4;
+        else if (total <= 4L * 1024L * MB) steady = 3;
+        else steady = 2;
+        return Math.max(2, Math.min(configured, steady));
     }
 
     private void downloadChunk(Chunk chunk) throws Exception {
@@ -481,8 +518,10 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     private void runDiskWriter() {
         RandomAccessFile out = null;
+        FileChannel channel = null;
         try {
             out = new RandomAccessFile(entry.partFile, "rw");
+            channel = out.getChannel();
             while (!cancelled || hasQueuedWriteBlocks() || !writerStopRequested) {
                 WriteBlock block = takeWriteBlock();
                 if (block == null) {
@@ -493,8 +532,9 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
                     markChunkComplete(block.chunk);
                     continue;
                 }
-                out.seek(block.position);
-                out.write(block.data, 0, block.length);
+                channel.position(block.position);
+                ByteBuffer bb = ByteBuffer.wrap(block.data, 0, block.length);
+                while (bb.hasRemaining()) channel.write(bb);
                 onDiskBytes(block.chunk, block.position + block.length - block.chunk.start);
             }
         } catch (Exception e) {
@@ -505,6 +545,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             synchronized (lock) { lock.notifyAll(); }
             synchronized (writeLock) { writeLock.notifyAll(); }
         } finally {
+            if (channel != null) try { channel.close(); } catch (Exception ignored) {}
             if (out != null) try { out.close(); } catch (Exception ignored) {}
         }
     }
@@ -526,7 +567,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             while (!writerStopRequested && !cancelled && error == null && writeQueue.isEmpty()) {
                 writeLock.wait(250L);
             }
-            WriteBlock block = writeQueue.pollFirst();
+            WriteBlock block = pollBestWriteBlockLocked();
             if (block != null && block.length > 0) {
                 queuedWriteBytes -= block.length;
                 if (queuedWriteBytes < 0) queuedWriteBytes = 0;
@@ -534,6 +575,34 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             }
             return block;
         }
+    }
+
+    private WriteBlock pollBestWriteBlockLocked() {
+        WriteBlock best = null;
+        long bestPosition = Long.MAX_VALUE;
+        java.util.Iterator<WriteBlock> it = writeQueue.iterator();
+        while (it.hasNext()) {
+            WriteBlock b = it.next();
+            if (b.completeMarker) continue;
+            if (b.position < bestPosition) {
+                best = b;
+                bestPosition = b.position;
+            }
+        }
+        if (best != null) {
+            writeQueue.remove(best);
+            return best;
+        }
+        it = writeQueue.iterator();
+        while (it.hasNext()) {
+            WriteBlock b = it.next();
+            if (!b.completeMarker) continue;
+            if (b.chunk == null || b.chunk.writtenBytes >= b.chunk.length()) {
+                it.remove();
+                return b;
+            }
+        }
+        return writeQueue.pollFirst();
     }
 
     private boolean hasQueuedWriteBlocks() {
@@ -860,9 +929,9 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     }
 
     private static long maxRamBufferBytesFor(long total) {
-        if (total <= 0) return 32L * MB;
-        if (total <= 256L * MB) return 24L * MB;
-        if (total <= 1024L * MB) return 32L * MB;
+        if (total <= 0) return 16L * MB;
+        if (total <= 256L * MB) return 12L * MB;
+        if (total <= 1024L * MB) return 16L * MB;
         return RAM_BUFFER_MAX_BYTES;
     }
 
@@ -886,12 +955,12 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private long playbackWindowBytes(long total) {
         long cs = chunkSizeFor(total);
         int wc = autoWorkerCount(total);
-        long byWorkers = cs * Math.max(3, wc) * 4L;
+        long byWorkers = cs * Math.max(2, wc) * 2L;
         long floor;
-        if (total <= 256L * MB) floor = 32L * MB;
-        else if (total <= 1024L * MB) floor = 96L * MB;
-        else if (total <= 4L * 1024L * MB) floor = 192L * MB;
-        else floor = 256L * MB;
+        if (total <= 256L * MB) floor = 24L * MB;
+        else if (total <= 1024L * MB) floor = 64L * MB;
+        else if (total <= 4L * 1024L * MB) floor = 128L * MB;
+        else floor = 192L * MB;
         return Math.min(total, Math.max(floor, byWorkers));
     }
 
