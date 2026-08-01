@@ -25,7 +25,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -442,23 +444,37 @@ public class BrowseActivity extends AppCompatActivity {
     }
 
     private String httpGet(String u) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
-        App.auth(c, this);
-        c.setConnectTimeout(8000);
-        c.setReadTimeout(40000);
-        int code = c.getResponseCode();
-        if (code != 200) {
-            c.disconnect();
-            throw new RuntimeException("HTTP " + code);
+        Exception last = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            HttpURLConnection c = null;
+            java.io.InputStream in = null;
+            try {
+                c = (HttpURLConnection) new URL(u).openConnection();
+                App.auth(c, this);
+                c.setUseCaches(false);
+                c.setRequestProperty("Connection", "close");
+                c.setConnectTimeout(attempt == 1 ? 5000 : 8000);
+                c.setReadTimeout(attempt == 1 ? 12000 : 20000);
+                int code = c.getResponseCode();
+                if (code != 200) throw new RuntimeException("HTTP " + code);
+                in = c.getInputStream();
+                java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int r;
+                while ((r = in.read(buf)) != -1) bo.write(buf, 0, r);
+                return bo.toString("UTF-8");
+            } catch (IOException e) {
+                last = e;
+                try { Thread.sleep(350L * attempt); } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw ie;
+                }
+            } finally {
+                if (in != null) try { in.close(); } catch (Exception ignored) {}
+                if (c != null) try { c.disconnect(); } catch (Exception ignored) {}
+            }
         }
-        java.io.InputStream in = c.getInputStream();
-        java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int r;
-        while ((r = in.read(buf)) != -1) bo.write(buf, 0, r);
-        in.close();
-        c.disconnect();
-        return bo.toString("UTF-8");
+        throw last == null ? new SocketTimeoutException("server timeout") : last;
     }
 
     @Override

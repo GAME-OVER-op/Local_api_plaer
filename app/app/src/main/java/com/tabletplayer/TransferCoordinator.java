@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * Глобальный ограничитель удалённых Java-соединений. Playback-cache теперь сам
  * регулирует число Range-потоков, а этот класс не даёт всему приложению уйти
- * выше безопасного общего лимита.
+ * выше безопасного общего лимита, чтобы не забивать сервер старыми Range-соединениями.
  */
 public final class TransferCoordinator {
     public enum Priority {
@@ -20,7 +20,7 @@ public final class TransferCoordinator {
     }
 
     private static final TransferCoordinator INSTANCE = new TransferCoordinator();
-    private static final int MAX_JAVA_REMOTE_TRANSFERS = 20;
+    private static final int MAX_JAVA_REMOTE_TRANSFERS = 12;
 
     private final Semaphore remote = new Semaphore(MAX_JAVA_REMOTE_TRANSFERS, true);
     private final AtomicInteger active = new AtomicInteger(0);

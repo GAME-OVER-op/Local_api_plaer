@@ -7,6 +7,8 @@ import java.io.RandomAccessFile;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -28,6 +30,7 @@ public final class PlaybackProxyServer implements AutoCloseable {
     private ServerSocket server;
     private Thread thread;
     private volatile boolean running;
+    private final List<Socket> activeSockets = new ArrayList<>();
 
     public PlaybackProxyServer(DataSource source) {
         this.source = source;
@@ -58,6 +61,7 @@ public final class PlaybackProxyServer implements AutoCloseable {
         while (running) {
             try {
                 Socket s = server.accept();
+                registerSocket(s);
                 Thread t = new Thread(new Client(s), "PlaybackProxyClient");
                 t.setDaemon(true);
                 t.start();
@@ -75,6 +79,30 @@ public final class PlaybackProxyServer implements AutoCloseable {
         } catch (IOException ignored) {
         }
         server = null;
+        closeActiveSockets();
+    }
+
+    private void registerSocket(Socket socket) {
+        synchronized (activeSockets) {
+            activeSockets.add(socket);
+        }
+    }
+
+    private void unregisterSocket(Socket socket) {
+        synchronized (activeSockets) {
+            activeSockets.remove(socket);
+        }
+    }
+
+    private void closeActiveSockets() {
+        ArrayList<Socket> copy;
+        synchronized (activeSockets) {
+            copy = new ArrayList<>(activeSockets);
+            activeSockets.clear();
+        }
+        for (Socket s : copy) {
+            try { s.close(); } catch (IOException ignored) {}
+        }
     }
 
     private final class Client implements Runnable {
@@ -88,6 +116,7 @@ public final class PlaybackProxyServer implements AutoCloseable {
         public void run() {
             try {
                 socket.setSoTimeout(15000);
+                try { socket.setTcpNoDelay(true); } catch (Throwable ignored) {}
                 byte[] req = new byte[4096];
                 int n = socket.getInputStream().read(req);
                 if (n <= 0) return;
@@ -96,6 +125,7 @@ public final class PlaybackProxyServer implements AutoCloseable {
                 serve(range);
             } catch (Throwable ignored) {
             } finally {
+                unregisterSocket(socket);
                 try {
                     socket.close();
                 } catch (IOException ignored) {
@@ -115,7 +145,7 @@ public final class PlaybackProxyServer implements AutoCloseable {
 
             long available = source.availableBytes();
             if (!initialReady) {
-                writeStatus(416, "Range Not Satisfiable", 0, null);
+                writeStatus(503, "Service Unavailable", 0, null);
                 return;
             }
             long length;
@@ -158,7 +188,7 @@ public final class PlaybackProxyServer implements AutoCloseable {
                 while (sent < length && running) {
                     long absolute = start + sent;
                     int want = (int) Math.min(buf.length, length - sent);
-                    boolean ok = source.waitForRange(absolute, absolute + want - 1L, 30000L);
+                    boolean ok = source.waitForRange(absolute, absolute + want - 1L, 15000L);
                     if (!ok) break;
                     int r = raf.read(buf, 0, want);
                     if (r < 0) {

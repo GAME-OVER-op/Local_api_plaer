@@ -20,7 +20,7 @@ import java.util.List;
  * Он не раскладывает весь файл в очередь сразу:
  * - до запуска планирует только подготовочную область 0..30%/300 МБ;
  * - после запуска держит скользящее окно вперёд;
- * - после seek в незагруженную область создаёт срочное окно от новой позиции.
+ * - после seek в незагруженную область ждёт обычное расширение кэша без дальних Range-прыжков.
  */
 public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, AutoCloseable {
     public interface Listener {
@@ -85,6 +85,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     private long lastSpeedUpdateMs;
     private long lastSpeedBytes;
     private double smoothedSpeedBytesPerSec;
+    private long lastNetworkBytesAtMs;
     private volatile boolean writerStopRequested;
 
 
@@ -205,6 +206,11 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     public long recentSpeedBytesPerSec() {
         synchronized (lock) {
+            long now = System.currentTimeMillis();
+            if (lastNetworkBytesAtMs <= 0 || now - lastNetworkBytesAtMs > 3000L) {
+                smoothedSpeedBytesPerSec = 0;
+                return 0;
+            }
             if (smoothedSpeedBytesPerSec > 0) return Math.max(0L, (long) smoothedSpeedBytesPerSec);
             if (samples.size() < 2) return 0;
             Sample first = samples.peekFirst();
@@ -259,6 +265,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
                 lastSpeedUpdateMs = 0;
                 lastSpeedBytes = 0;
                 smoothedSpeedBytesPerSec = 0;
+                lastNetworkBytesAtMs = 0;
                 addSampleLocked(0);
             }
             PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "total=" + total + " target=" + prepareTargetBytes() + " chunk=" + chunkSizeFor(total) + " workers=" + workerCount() + " ram=" + maxRamBufferBytesFor(total) + " max=" + TransferCoordinator.get().maxRemoteTransfers());
@@ -472,9 +479,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         int configured = Store.getPlaybackCacheThreads(context);
         if (!readyNotified) return Math.max(3, Math.min(configured, autoWorkerCount(total)));
         int steady;
-        if (total <= 256L * MB) steady = 4;
-        else if (total <= 1024L * MB) steady = 4;
-        else if (total <= 4L * 1024L * MB) steady = 3;
+        if (total <= 1024L * MB) steady = 3;
         else steady = 2;
         return Math.max(2, Math.min(configured, steady));
     }
@@ -499,13 +504,12 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             int read;
             while (!cancelled && error == null && pos <= chunk.end && (read = in.read(buf, 0, (int) Math.min(buf.length, chunk.end - pos + 1))) != -1) {
                 byte[] data = Arrays.copyOf(buf, read);
-                enqueueWriteBlock(new WriteBlock(chunk, pos, data, read, false));
+                enqueueWriteBlock(new WriteBlock(chunk, pos, data, read));
                 pos += read;
                 onNetworkBytes(chunk, pos - chunk.start);
             }
             if (cancelled || error != null) return;
             if (pos <= chunk.end) throw new RuntimeException("short range " + chunk.start + "-" + chunk.end + " got=" + (pos - chunk.start));
-            enqueueWriteBlock(new WriteBlock(chunk, 0, null, 0, true));
         } finally {
             if (in != null) try { in.close(); } catch (Exception ignored) {}
             if (c != null) {
@@ -522,14 +526,10 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         try {
             out = new RandomAccessFile(entry.partFile, "rw");
             channel = out.getChannel();
-            while (!cancelled || hasQueuedWriteBlocks() || !writerStopRequested) {
+            while (!cancelled && error == null) {
                 WriteBlock block = takeWriteBlock();
                 if (block == null) {
                     if (writerStopRequested || cancelled || error != null) break;
-                    continue;
-                }
-                if (block.completeMarker) {
-                    markChunkComplete(block.chunk);
                     continue;
                 }
                 channel.position(block.position);
@@ -583,7 +583,6 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         java.util.Iterator<WriteBlock> it = writeQueue.iterator();
         while (it.hasNext()) {
             WriteBlock b = it.next();
-            if (b.completeMarker) continue;
             if (b.position < bestPosition) {
                 best = b;
                 bestPosition = b.position;
@@ -593,16 +592,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             writeQueue.remove(best);
             return best;
         }
-        it = writeQueue.iterator();
-        while (it.hasNext()) {
-            WriteBlock b = it.next();
-            if (!b.completeMarker) continue;
-            if (b.chunk == null || b.chunk.writtenBytes >= b.chunk.length()) {
-                it.remove();
-                return b;
-            }
-        }
-        return writeQueue.pollFirst();
+        return null;
     }
 
     private boolean hasQueuedWriteBlocks() {
@@ -629,6 +619,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             networkReceivedBytes += delta;
             if (total > 0 && networkReceivedBytes > total) networkReceivedBytes = total;
             if (networkReceivedBytes > entry.cachedBytes) entry.cachedBytes = networkReceivedBytes;
+            lastNetworkBytesAtMs = System.currentTimeMillis();
             updateSmoothedSpeedLocked();
             addSampleLocked(entry.cachedBytes);
             lock.notifyAll();
@@ -638,6 +629,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     private void onDiskBytes(Chunk chunk, long writtenInChunk) {
         if (chunk == null || writtenInChunk <= 0) return;
+        boolean chunkReady = false;
         synchronized (lock) {
             long clamped = Math.max(0L, Math.min(chunk.length(), writtenInChunk));
             long delta = clamped - chunk.writtenBytes;
@@ -646,8 +638,10 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             diskWrittenBytes += delta;
             long total = entry.totalBytes;
             if (total > 0 && diskWrittenBytes > total) diskWrittenBytes = total;
+            if (chunk.writtenBytes >= chunk.length() && chunk.state != CHUNK_DONE) chunkReady = true;
             lock.notifyAll();
         }
+        if (chunkReady) markChunkComplete(chunk);
     }
 
     private void updateSmoothedSpeedLocked() {
@@ -867,10 +861,16 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         cancelled = true;
         requestWriterStop();
         disconnectAll();
+        Thread t = thread;
+        if (t != null) {
+            try { t.interrupt(); } catch (Throwable ignored) {}
+        }
         synchronized (lock) {
             lock.notifyAll();
         }
         synchronized (writeLock) {
+            writeQueue.clear();
+            queuedWriteBytes = 0;
             writeLock.notifyAll();
         }
     }
@@ -1043,14 +1043,12 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         final long position;
         final byte[] data;
         final int length;
-        final boolean completeMarker;
 
-        WriteBlock(Chunk chunk, long position, byte[] data, int length, boolean completeMarker) {
+        WriteBlock(Chunk chunk, long position, byte[] data, int length) {
             this.chunk = chunk;
             this.position = position;
             this.data = data;
             this.length = length;
-            this.completeMarker = completeMarker;
         }
     }
 

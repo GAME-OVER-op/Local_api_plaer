@@ -692,11 +692,15 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void startDirectPlayback(String p, String nm, long resume, boolean fromFallback) {
-        if (!fromFallback) stopPlaybackCache(false);
+        if (!fromFallback) {
+            stopPrefetchWindow();
+            stopPlaybackCache(false);
+        }
         startSource(p, nm, resume, SourceMode.DIRECT_REMOTE, fromFallback);
     }
 
     private void startCachePlayback(final String p, final String nm, final long resume) {
+        stopPrefetchWindow();
         stopPlaybackCache(false);
         activeCacheEntry = PlaybackCacheManager.get().entryFor(this, base, p, nm);
         cacheTask = new PlaybackCacheTask(this, activeCacheEntry, false, new PlaybackCacheTask.Listener() {
@@ -819,6 +823,7 @@ public class PlayerActivity extends AppCompatActivity {
         cacheSeekStartedAtMs = 0;
         cacheSeekTargetEndBytes = 0;
         showBuffering("Запуск прямого воспроизведения…");
+        stopPrefetchWindow();
         stopPlaybackCache(false);
         startSource(p, nm, pos, SourceMode.DIRECT_REMOTE, true);
     }
@@ -914,6 +919,15 @@ public class PlayerActivity extends AppCompatActivity {
         }
     }
 
+    private void stopPrefetchWindow() {
+        prefetchCancelled = true;
+        Thread t = prefetchThread;
+        prefetchThread = null;
+        if (t != null) {
+            try { t.interrupt(); } catch (Throwable ignored) {}
+        }
+    }
+
     private void startPrefetchWindow() {
         if (local || episodePaths.isEmpty() || episodeIndex < 0 || prefetchThread != null && prefetchThread.isAlive()) return;
         if (cacheTask != null && !cacheTask.complete()) return;
@@ -943,8 +957,7 @@ public class PlayerActivity extends AppCompatActivity {
     private void playEpisode(int index) {
         if (index < 0 || index >= episodePaths.size()) return;
         savePosition(true);
-        prefetchCancelled = true;
-        prefetchThread = null;
+        stopPrefetchWindow();
         episodeIndex = index;
         playPath(episodePaths.get(index), episodeNames.get(index), 0);
     }
@@ -1708,6 +1721,8 @@ public class PlayerActivity extends AppCompatActivity {
         PlayerDiagnostics.log(this, "lifecycle", "back pos=" + currentMs + " source=" + sourceMode);
         setPlaybackPhase(PlaybackPhase.STOPPING);
         savePosition(true);
+        stopPrefetchWindow();
+        stopPlaybackCache(false);
         super.onBackPressed();
         overridePendingTransition(R.anim.fade_in, R.anim.fade_out);
     }
@@ -1725,7 +1740,7 @@ public class PlayerActivity extends AppCompatActivity {
             session = null;
         }
         if (audioManager != null) audioManager.abandonAudioFocus(focusListener);
-        prefetchCancelled = true;
+        stopPrefetchWindow();
         stopPlaybackCache(false);
         releaseCurrentPlayer();
         PlaybackCacheManager.get().clearAll(this);

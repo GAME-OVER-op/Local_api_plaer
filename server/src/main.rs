@@ -328,10 +328,15 @@ fn main() {
     let state = Arc::new(State { config, knocks_path: knocks_path.clone() });
     let shared_approved = Arc::clone(&approved);
 
-    let workers = thread::available_parallelism()
-        .map(|n| n.get().saturating_mul(4))
-        .unwrap_or(16)
-        .clamp(8, 32);
+    let workers = std::env::var("MEDIA_WORKERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or_else(|| {
+            thread::available_parallelism()
+                .map(|n| n.get().saturating_mul(4))
+                .unwrap_or(16)
+        })
+        .clamp(16, 48);
     let mut handles = Vec::new();
     for _ in 0..workers {
         let server = Arc::clone(&server);
@@ -587,12 +592,17 @@ fn server_header() -> Header {
     Header::from_bytes(&b"Server"[..], SERVER_BANNER.as_bytes()).unwrap()
 }
 
+fn connection_close_header() -> Header {
+    Header::from_bytes(&b"Connection"[..], &b"close"[..]).unwrap()
+}
+
 fn respond_text(request: Request, code: u16, body: &str) -> u16 {
     let header = Header::from_bytes(&b"Content-Type"[..], &b"text/plain; charset=utf-8"[..]).unwrap();
     let response = Response::from_string(body)
         .with_status_code(StatusCode(code))
         .with_header(header)
-        .with_header(server_header());
+        .with_header(server_header())
+        .with_header(connection_close_header());
     let _ = request.respond(response);
     code
 }
@@ -602,7 +612,8 @@ fn respond_html(request: Request, code: u16, body: &str) -> u16 {
     let response = Response::from_string(body)
         .with_status_code(StatusCode(code))
         .with_header(header)
-        .with_header(server_header());
+        .with_header(server_header())
+        .with_header(connection_close_header());
     let _ = request.respond(response);
     code
 }
@@ -620,7 +631,8 @@ fn respond_json(request: Request, code: u16, value: Value) -> u16 {
     let response = Response::from_string(value.to_string())
         .with_status_code(StatusCode(code))
         .with_header(header)
-        .with_header(server_header());
+        .with_header(server_header())
+        .with_header(connection_close_header());
     let _ = request.respond(response);
     code
 }
@@ -749,13 +761,13 @@ fn respond_download(request: Request, config: &Config, rel: &str) -> u16 {
             let reader = file.take(length);
             let cr_value = format!("bytes {}-{}/{}", start, end, total);
             let cr = Header::from_bytes(&b"Content-Range"[..], cr_value.as_bytes()).unwrap();
-            let response = Response::new(StatusCode(206), vec![ct, cd, ar, cr, server_header()], reader, Some(length as usize), None);
+            let response = Response::new(StatusCode(206), vec![ct, cd, ar, cr, server_header(), connection_close_header()], reader, usize::try_from(length).ok(), None);
             let _ = request.respond(response);
             return 206;
         }
     }
 
-    let response = Response::new(StatusCode(200), vec![ct, cd, ar, server_header()], file, Some(total as usize), None);
+    let response = Response::new(StatusCode(200), vec![ct, cd, ar, server_header(), connection_close_header()], file, usize::try_from(total).ok(), None);
     let _ = request.respond(response);
     200
 }
