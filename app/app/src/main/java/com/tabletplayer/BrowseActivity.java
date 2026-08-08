@@ -651,7 +651,7 @@ public class BrowseActivity extends AppCompatActivity {
         return sb.toString();
     }
 
-    private String iconFor(Entry e) { return e.isDir ? "▣" : (Util.isVideo(e.name) ? "▶" : (Util.isApk(e.name) ? "◆" : "•")); }
+    private String iconFor(Entry e) { return e.isDir ? "📁" : (Util.isVideo(e.name) ? "🎬" : (Util.isApk(e.name) ? "📦" : "📄")); }
 
     private void notifyAdapters() { if (adapter != null) adapter.notifyDataSetChanged(); if (gridAdapter != null) gridAdapter.notifyDataSetChanged(); }
 
