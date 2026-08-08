@@ -157,6 +157,14 @@ public class App extends Application {
         return "";
     }
 
+    public static String discoveryPacket(Context ctx) {
+        String ts = String.valueOf(System.currentTimeMillis() / 1000L);
+        String nonce = nonce();
+        String id = deviceId(ctx);
+        String payload = "DISCOVER\n" + id + "\n" + ts + "\n" + nonce;
+        return "MEDIA_DISCOVER_V2|" + id + "|" + ts + "|" + nonce + "|" + hmac(deviceSecret(ctx), payload);
+    }
+
     private static String nonce() {
         byte[] bytes = new byte[16];
         new SecureRandom().nextBytes(bytes);

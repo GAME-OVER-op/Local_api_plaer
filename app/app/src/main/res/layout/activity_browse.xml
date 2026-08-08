@@ -1,208 +1,122 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="@color/bg"
-    android:focusableInTouchMode="true"
-    android:focusable="true">
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical"
+    android:background="@color/bg" android:focusableInTouchMode="true" android:focusable="true">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:background="@color/primary"
-        android:gravity="center_vertical"
-        android:padding="10dp">
-
-        <EditText
-            android:id="@+id/search"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:background="@drawable/edit_bg"
-            android:hint="Поиск по файлам"
-            android:imeOptions="actionSearch"
-            android:inputType="text"
-            android:maxLines="1"
-            android:padding="12dp"
-            android:textColor="@color/text_primary"
-            android:textColorHint="@color/text_secondary" />
-
-        <Button
-            android:id="@+id/search_btn"
-            style="@style/PrimaryButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginLeft="8dp"
-            android:text="Найти" />
-
-        <ImageButton
-            android:id="@+id/downloads_btn"
-            style="@style/ControlButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginLeft="4dp"
-            android:contentDescription="Загрузки"
-            app:srcCompat="@drawable/ic_download" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:background="@color/primary" android:gravity="center_vertical"
+        android:paddingLeft="8dp" android:paddingRight="8dp" android:paddingTop="7dp" android:paddingBottom="7dp">
+        <Button android:id="@+id/servers_btn" style="@style/ControlButton" android:layout_width="wrap_content"
+            android:layout_height="44dp" android:minWidth="44dp" android:text="‹" android:textColor="@color/header_text" android:textSize="24sp" />
+        <TextView android:id="@+id/server_status" android:layout_width="0dp" android:layout_height="44dp" android:layout_weight="1"
+            android:gravity="center_vertical" android:paddingLeft="8dp" android:singleLine="true" android:ellipsize="end"
+            android:text="● media-server" android:textColor="@color/header_text" android:textSize="15sp" android:textStyle="bold" />
+        <Button android:id="@+id/view_mode_btn" style="@style/ControlButton" android:layout_width="44dp" android:layout_height="44dp"
+            android:minWidth="44dp" android:text="▦" android:textColor="@color/header_text" android:textSize="18sp" />
+        <Button android:id="@+id/bookmarks_btn" style="@style/ControlButton" android:layout_width="44dp" android:layout_height="44dp"
+            android:minWidth="44dp" android:text="☆" android:textColor="@color/header_text" android:textSize="21sp" />
+        <Button android:id="@+id/queue_btn" style="@style/ControlButton" android:layout_width="wrap_content" android:layout_height="44dp"
+            android:minWidth="0dp" android:text="Очередь" android:textColor="@color/header_text" android:textSize="12sp" />
+        <Button android:id="@+id/sort_btn" style="@style/ControlButton" android:layout_width="wrap_content" android:layout_height="44dp"
+            android:minWidth="0dp" android:text="A↑" android:textColor="@color/header_text" android:textSize="12sp" />
     </LinearLayout>
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:background="@color/primary_dark"
-        android:gravity="center_vertical"
-        android:paddingLeft="8dp"
-        android:paddingRight="6dp">
-
-        <Button
-            android:id="@+id/servers_btn"
-            style="@style/ControlButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:minWidth="0dp"
-            android:text="← Серверы"
-            android:textColor="@color/header_text"
-            android:textSize="13sp" />
-
-        <HorizontalScrollView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:scrollbars="none"
-            android:fillViewport="true">
-
-            <LinearLayout
-                android:id="@+id/crumbs"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:gravity="center_vertical" />
-        </HorizontalScrollView>
-
-        <Button
-            android:id="@+id/queue_btn"
-            style="@style/ControlButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:minWidth="0dp"
-            android:text="Очередь"
-            android:textColor="@color/header_text"
-            android:textSize="13sp" />
-
-        <Button
-            android:id="@+id/sort_btn"
-            style="@style/ControlButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:minWidth="0dp"
-            android:text="Имя ↑"
-            android:textColor="@color/header_text"
-            android:textSize="13sp" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal"
+        android:background="@color/primary_dark" android:gravity="center_vertical" android:padding="7dp">
+        <EditText android:id="@+id/search" android:layout_width="0dp" android:layout_height="42dp" android:layout_weight="1"
+            android:background="@drawable/edit_bg" android:hint="Поиск по файлам" android:imeOptions="actionSearch"
+            android:inputType="text" android:maxLines="1" android:paddingLeft="12dp" android:paddingRight="12dp"
+            android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" />
+        <Button android:id="@+id/search_btn" style="@style/ControlButton" android:layout_width="wrap_content" android:layout_height="42dp"
+            android:layout_marginLeft="6dp" android:minWidth="0dp" android:text="Найти" android:textColor="@color/header_text" />
+        <ImageButton android:id="@+id/downloads_btn" style="@style/ControlButton" android:layout_width="44dp" android:layout_height="42dp"
+            android:layout_marginLeft="4dp" android:contentDescription="Загрузки" android:src="@drawable/ic_download" />
     </LinearLayout>
 
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
+    <HorizontalScrollView android:id="@+id/crumb_scroll" android:layout_width="match_parent" android:layout_height="56dp"
+        android:background="@color/surface" android:scrollbars="none" android:fillViewport="false">
+        <LinearLayout android:id="@+id/crumbs" android:layout_width="wrap_content" android:layout_height="match_parent"
+            android:orientation="horizontal" android:gravity="center_vertical" android:paddingLeft="8dp" android:paddingRight="8dp" />
+    </HorizontalScrollView>
 
-        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-            android:id="@+id/swipe"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent">
+    <FrameLayout android:id="@+id/browse_body" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+        <FrameLayout android:id="@+id/browser_surface" android:layout_width="match_parent" android:layout_height="match_parent">
+            <androidx.swiperefreshlayout.widget.SwipeRefreshLayout android:id="@+id/swipe"
+                android:layout_width="match_parent" android:layout_height="match_parent">
+                <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent">
+                    <ListView android:id="@+id/list" android:layout_width="match_parent" android:layout_height="match_parent"
+                        android:divider="@color/divider" android:dividerHeight="1dp" android:drawSelectorOnTop="false" />
+                    <GridView android:id="@+id/grid" android:layout_width="match_parent" android:layout_height="match_parent"
+                        android:numColumns="auto_fit" android:columnWidth="150dp" android:horizontalSpacing="8dp" android:verticalSpacing="8dp"
+                        android:padding="8dp" android:stretchMode="columnWidth" android:visibility="gone" />
+                </FrameLayout>
+            </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 
-            <ListView
-                android:id="@+id/list"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:divider="@color/divider"
-                android:dividerHeight="1dp"
-                android:drawSelectorOnTop="false" />
-        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+            <LinearLayout android:id="@+id/skeleton" android:layout_width="match_parent" android:layout_height="match_parent"
+                android:orientation="vertical" android:padding="16dp" android:background="@color/bg" android:visibility="gone" />
 
-        <TextView
-            android:id="@+id/empty"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:text="Пусто"
-            android:textColor="@color/text_secondary"
-            android:textSize="16sp"
-            android:visibility="gone" />
+            <TextView android:id="@+id/empty" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="center" android:text="Здесь пока ничего нет" android:textColor="@color/text_secondary"
+                android:textSize="16sp" android:visibility="gone" />
+
+            <View android:id="@+id/scroll_thumb" android:layout_width="3dp" android:layout_height="48dp"
+                android:layout_gravity="right|top" android:layout_marginRight="2dp" android:background="@color/scroll_thumb" android:visibility="gone" />
+
+            <Button android:id="@+id/to_top" android:layout_width="48dp" android:layout_height="48dp" android:layout_gravity="right|bottom"
+                android:layout_margin="14dp" android:minWidth="48dp" android:background="@drawable/btn_primary" android:text="↑"
+                android:textColor="#FFFFFF" android:textSize="20sp" android:visibility="gone" />
+        </FrameLayout>
+
+        <LinearLayout android:id="@+id/right_drawer" android:layout_width="320dp" android:layout_height="match_parent"
+            android:layout_gravity="right" android:orientation="vertical" android:background="@drawable/drawer_bg" android:padding="12dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical">
+                <TextView android:id="@+id/drawer_title" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+                    android:gravity="center_vertical" android:text="Закладки" android:textColor="@color/text_primary" android:textSize="18sp" android:textStyle="bold" />
+                <Button android:id="@+id/drawer_close" style="@style/ControlButton" android:layout_width="44dp" android:layout_height="44dp"
+                    android:minWidth="44dp" android:text="×" android:textColor="@color/text_primary" android:textSize="22sp" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/bookmarks_content" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="vertical">
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="ЗАКЛАДКИ" android:textColor="@color/text_secondary" android:textSize="11sp" android:textStyle="bold" android:paddingTop="8dp" android:paddingBottom="6dp" />
+                <ListView android:id="@+id/bookmarks_list" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:divider="@color/divider" android:dividerHeight="1dp" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="НЕДАВНИЕ ПАПКИ" android:textColor="@color/text_secondary" android:textSize="11sp" android:textStyle="bold" android:paddingTop="10dp" android:paddingBottom="6dp" />
+                <ListView android:id="@+id/recent_dirs" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:divider="@color/divider" android:dividerHeight="1dp" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="НЕДАВНИЕ ВИДЕО" android:textColor="@color/text_secondary" android:textSize="11sp" android:textStyle="bold" android:paddingTop="10dp" android:paddingBottom="6dp" />
+                <ListView android:id="@+id/recent_videos" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:divider="@color/divider" android:dividerHeight="1dp" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/info_content" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="vertical" android:visibility="gone">
+                <TextView android:id="@+id/info_name" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/text_primary" android:textSize="18sp" android:textStyle="bold" />
+                <TextView android:id="@+id/info_path" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textColor="@color/text_secondary" android:textSize="12sp" />
+                <TextView android:id="@+id/info_meta" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textColor="@color/text_primary" android:textSize="14sp" />
+                <Button android:id="@+id/info_play" style="@style/PrimaryButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="▶ Смотреть" />
+                <Button android:id="@+id/info_download" style="@style/PrimaryButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:background="@drawable/btn_control_solid" android:text="Скачать" />
+                <Button android:id="@+id/info_location" style="@style/ControlButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Открыть расположение" android:textColor="@color/primary" android:visibility="gone" />
+            </LinearLayout>
+        </LinearLayout>
     </FrameLayout>
 
-    <LinearLayout
-        android:id="@+id/undo_bar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:background="#2B333B"
-        android:gravity="center_vertical"
-        android:padding="10dp"
-        android:visibility="gone">
-
-        <TextView
-            android:id="@+id/undo_text"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:paddingLeft="6dp"
-            android:singleLine="true"
-            android:ellipsize="middle"
-            android:text="Загрузка…"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp" />
-
-        <Button
-            android:id="@+id/undo_cancel"
-            style="@style/ControlButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:minWidth="0dp"
-            android:text="ОТМЕНИТЬ"
-            android:textColor="@color/accent"
-            android:textSize="14sp"
-            android:textStyle="bold" />
+    <LinearLayout android:id="@+id/download_bar" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:background="@color/surface_alt" android:gravity="center_vertical" android:padding="8dp" android:visibility="gone">
+        <TextView android:id="@+id/download_bar_text" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+            android:text="Загрузки" android:textColor="@color/text_primary" android:textSize="13sp" />
+        <ProgressBar android:id="@+id/download_bar_progress" style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="120dp" android:layout_height="5dp" android:max="100" />
     </LinearLayout>
 
-    <LinearLayout
-        android:id="@+id/queue_bar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:background="@color/primary_dark"
-        android:gravity="center_vertical"
-        android:padding="8dp"
-        android:visibility="gone">
+    <LinearLayout android:id="@+id/undo_bar" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:background="#2B333B" android:gravity="center_vertical" android:padding="10dp" android:visibility="gone">
+        <TextView android:id="@+id/undo_text" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+            android:paddingLeft="6dp" android:singleLine="true" android:ellipsize="middle" android:text="Загрузка…" android:textColor="#FFFFFF" android:textSize="14sp" />
+        <Button android:id="@+id/undo_cancel" style="@style/ControlButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:minWidth="0dp" android:text="ОТМЕНИТЬ" android:textColor="@color/accent" android:textSize="14sp" android:textStyle="bold" />
+    </LinearLayout>
 
-        <TextView
-            android:id="@+id/queue_info"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:paddingLeft="6dp"
-            android:text="В очереди: 0"
-            android:textColor="@color/header_text"
-            android:textSize="14sp" />
-
-        <Button
-            android:id="@+id/queue_clear"
-            style="@style/ControlButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:minWidth="0dp"
-            android:text="Очистить"
-            android:textColor="@color/header_text"
-            android:textSize="13sp" />
-
-        <Button
-            android:id="@+id/queue_play"
-            style="@style/PrimaryButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginLeft="8dp"
-            android:text="▶ Играть" />
+    <LinearLayout android:id="@+id/queue_bar" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:background="@color/primary_dark" android:gravity="center_vertical" android:padding="8dp" android:visibility="gone">
+        <TextView android:id="@+id/queue_info" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+            android:paddingLeft="6dp" android:text="В очереди: 0" android:textColor="@color/header_text" android:textSize="14sp" />
+        <Button android:id="@+id/queue_clear" style="@style/ControlButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:minWidth="0dp" android:text="Очистить" android:textColor="@color/header_text" android:textSize="13sp" />
+        <Button android:id="@+id/queue_play" style="@style/PrimaryButton" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginLeft="8dp" android:text="▶ Играть" />
     </LinearLayout>
 </LinearLayout>

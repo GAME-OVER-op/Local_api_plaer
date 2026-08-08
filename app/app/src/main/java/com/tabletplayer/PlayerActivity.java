@@ -69,7 +69,7 @@ public class PlayerActivity extends AppCompatActivity {
     private static final int DECODER_HARDWARE = 1;
     private static final int DECODER_SOFTWARE = 2;
 
-    private String base, path, name, folder, serverName;
+    private String base, path, name, folder, serverName, serverId;
     private boolean local = false;
 
     private LibVLC libVLC;
@@ -177,9 +177,11 @@ public class PlayerActivity extends AppCompatActivity {
         name = getIntent().getStringExtra("name");
         folder = getIntent().getStringExtra("folder");
         serverName = getIntent().getStringExtra("server_name");
+        serverId = getIntent().getStringExtra("server_id");
         local = getIntent().getBooleanExtra("local", false);
         if (folder == null) folder = "";
         if (serverName == null) serverName = "";
+        if (serverId == null) serverId = "";
 
         String[] queuePathsExtra = getIntent().getStringArrayExtra("queue_paths");
         String[] queueNamesExtra = getIntent().getStringArrayExtra("queue_names");
@@ -376,6 +378,10 @@ public class PlayerActivity extends AppCompatActivity {
         ui.removeCallbacks(reconnectAgain);
         path = p;
         name = nm;
+        if (!local && base != null && p != null) {
+            UiStore.setLastPlayed(this, serverId, base, p);
+            UiStore.addRecentVideo(this, serverId, base, p, nm);
+        }
         sourceMode = mode;
         currentMediaOverrideUri = mediaOverrideUri;
         PlayerDiagnostics.log(this, "start", "gen=" + generation + " mode=" + mode + " resume=" + resume + " path=" + p + " override=" + (mediaOverrideUri != null));
@@ -1080,7 +1086,20 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private String pickServer(List<Discovery.Server> servers) {
-        // Сначала — сервер с тем же именем и наличием файла по тому же пути.
+        // Для уже разрешённого сервера постоянный server_id важнее IP и имени.
+        if (serverId != null && !serverId.isEmpty()) {
+            for (Discovery.Server s : servers) {
+                if (s.trusted && serverId.equals(s.id)) {
+                    String cand = "http://" + s.host + ":" + s.port;
+                    if (verifyPath(cand, path)) {
+                        UiStore.saveServer(this, serverId, s.name, s.host, s.port);
+                        return cand;
+                    }
+                }
+            }
+            return null;
+        }
+        // Legacy pairing: имя + проверка того же файла.
         if (serverName != null && !serverName.isEmpty()) {
             for (Discovery.Server s : servers) {
                 if (serverName.equals(s.name)) {

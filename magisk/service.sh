@@ -13,8 +13,18 @@ if [ -f "$MODDIR/config.env" ]; then
   . "$MODDIR/config.env"
 fi
 
-# все данные (allowed.json, access.log) держим в папке модуля
+# все данные (allowed.json, access.log, server_id) держим в папке модуля
 export MEDIA_DATA_DIR="$MODDIR"
+
+# По умолчанию показываем разрешённым клиентам понятное имя самого Android-устройства.
+# MEDIA_NAME из config.env имеет приоритет.
+if [ -z "$MEDIA_NAME" ]; then
+  BRAND="$(getprop ro.product.manufacturer 2>/dev/null)"
+  MODEL="$(getprop ro.product.model 2>/dev/null)"
+  MEDIA_NAME="$(printf '%s %s' "$BRAND" "$MODEL" | sed 's/^ *//;s/ *$//;s/  */ /g')"
+  [ -n "$MEDIA_NAME" ] || MEDIA_NAME="Android server"
+fi
+export MEDIA_NAME
 
 chmod 0755 "$MODDIR/media-server" 2>/dev/null
 

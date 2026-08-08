@@ -92,3 +92,18 @@
 - `server` — собирает `media-server` (aarch64) и Magisk-модуль. Артефакты: `media-server-aarch64`, `media-server-magisk`.
 - `server-selftest` — проверяет, что чужим отдаётся ровно один заголовок `Server: nginx` (маскировка без дубликатов).
 - `app` — собирает APK. Артефакт: `tablet-player-apk`.
+
+## UI / trusted server update
+
+The Android client now includes:
+
+- split/slide-out right panel for bookmarks, recent folders/videos, and selected-file details;
+- long-press folder bookmarking stored per trusted server;
+- list/grid browser modes, block breadcrumbs with larger touch targets, folder navigation animation, skeleton loading, thin scroll position indicator, and a scroll-to-top action;
+- in-row download progress and a compact aggregate download bar;
+- search result action to open the containing folder;
+- return-to-current-video positioning/highlight when coming back from playback;
+- shallow folder metadata (direct child count and direct file size) supplied by `/list`;
+- compact server connection indicator and animated bookmark button state.
+
+Trusted server identity is now independent of IP address. The server persists `server_id` in its data directory and exposes the device name/ID only to an authorized client. Discovery sends three background attempts and deduplicates replies. A previously authorized tablet can select the saved device name: the client first checks the last IP, then performs signed LAN discovery, verifies `/identity`, updates the IP, and connects automatically.

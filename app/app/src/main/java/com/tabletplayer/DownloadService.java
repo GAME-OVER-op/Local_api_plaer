@@ -24,6 +24,8 @@ import java.io.InputStream;
 import java.security.MessageDigest;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -38,7 +40,36 @@ public class DownloadService extends Service {
     private static final String CH = "downloads";
 
     static final ConcurrentHashMap<Integer, Boolean> CANCELLED = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Integer, Progress> PROGRESS = new ConcurrentHashMap<>();
     private static final AtomicInteger SEQ = new AtomicInteger(2000);
+
+    public static class Progress {
+        public int id;
+        public String base = "";
+        public String path = "";
+        public String name = "";
+        public long done;
+        public long total;
+        public long bytesPerSec;
+        public boolean preparing;
+
+        public int percent() { return total > 0 ? (int) Math.min(100, done * 100L / total) : -1; }
+    }
+
+    public static List<Progress> activeProgress() {
+        return new ArrayList<>(PROGRESS.values());
+    }
+
+    public static Progress progressFor(String base, String path) {
+        for (Progress p : PROGRESS.values()) {
+            if (same(base, p.base) && same(path, p.path)) return p;
+        }
+        return null;
+    }
+
+    private static boolean same(String a, String b) {
+        return a == null ? b == null : a.equals(b);
+    }
 
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -117,6 +148,9 @@ public class DownloadService extends Service {
             final String path = intent.getStringExtra("path");
             final String name = intent.getStringExtra("name");
             final boolean install = intent.getBooleanExtra("install", false);
+            Progress initial = new Progress();
+            initial.id = id; initial.base = base == null ? "" : base; initial.path = path == null ? "" : path; initial.name = name == null ? "" : name; initial.preparing = true;
+            PROGRESS.put(id, initial);
             active.incrementAndGet();
             NotificationCompat.Builder nb = builder(id, name).setContentText("Подготовка…").setProgress(0, 0, true);
             if (!fg) {
@@ -186,9 +220,13 @@ public class DownloadService extends Service {
             FileOutputStream fos = new FileOutputStream(out, append);
             byte[] buf = new byte[65536];
             long done = existing;
+            Progress progress = PROGRESS.get(id);
+            if (progress != null) { progress.done = done; progress.total = total; progress.preparing = false; }
             int r;
             int lastPct = -1;
             long lastNotif = 0;
+            long speedBytes = done;
+            long speedAt = System.currentTimeMillis();
             while ((r = in.read(buf)) != -1) {
                 if (Boolean.TRUE.equals(CANCELLED.remove(id))) {
                     cancelled = true;
@@ -197,6 +235,14 @@ public class DownloadService extends Service {
                 fos.write(buf, 0, r);
                 done += r;
                 long now = System.currentTimeMillis();
+                if (progress != null) {
+                    progress.done = done; progress.total = total;
+                    long dt = now - speedAt;
+                    if (dt >= 500) {
+                        progress.bytesPerSec = Math.max(0, (done - speedBytes) * 1000L / dt);
+                        speedBytes = done; speedAt = now;
+                    }
+                }
                 if (total > 0) {
                     int pct = (int) (done * 100 / total);
                     if (pct != lastPct && now - lastNotif > 300) {
@@ -218,6 +264,7 @@ public class DownloadService extends Service {
         } catch (Exception ex) {
             nb.setOngoing(false).setProgress(0, 0, false).setContentText("Ошибка: " + ex.getMessage()).setAutoCancel(true);
             nm.notify(id, nb.build());
+            PROGRESS.remove(id);
             if (lease != null) lease.close();
             finishOne();
             return;
@@ -225,6 +272,7 @@ public class DownloadService extends Service {
 
         if (lease != null) lease.close();
 
+        PROGRESS.remove(id);
         if (cancelled) {
             nm.cancel(id);
             if (out != null) out.delete();

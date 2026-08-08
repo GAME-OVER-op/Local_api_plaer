@@ -27,6 +27,7 @@ struct Config {
     port: u16,
     root: PathBuf,
     name: String,
+    id: String,
     background: bool,
     data_dir: PathBuf,
 }
@@ -79,7 +80,30 @@ fn parse_config() -> Config {
         i += 1;
     }
 
-    Config { host, port, root: PathBuf::from(root), name, background, data_dir: data_dir.unwrap_or_else(default_data_dir) }
+    let data_dir = data_dir.unwrap_or_else(default_data_dir);
+    let id = load_or_create_server_id(&data_dir);
+    Config { host, port, root: PathBuf::from(root), name, id, background, data_dir }
+}
+
+fn load_or_create_server_id(data_dir: &Path) -> String {
+    let path = data_dir.join("server_id");
+    if let Ok(s) = fs::read_to_string(&path) {
+        let id = s.trim();
+        if id.len() >= 16 {
+            return id.to_string();
+        }
+    }
+    let _ = fs::create_dir_all(data_dir);
+    let candidate = fs::read_to_string("/proc/sys/kernel/random/uuid")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.len() >= 16)
+        .unwrap_or_else(|| {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+            format!("{:x}-{:x}", now, std::process::id())
+        });
+    let _ = fs::write(&path, candidate.as_bytes());
+    candidate
 }
 
 fn print_help() {
@@ -263,7 +287,7 @@ fn control_loop(
     }
 }
 
-fn spawn_discovery(name: String, port: u16) {
+fn spawn_discovery(name: String, server_id: String, port: u16, approved: Arc<Mutex<Vec<Value>>>) {
     thread::spawn(move || {
         let sock = match UdpSocket::bind(("0.0.0.0", port)) {
             Ok(s) => s,
@@ -272,13 +296,40 @@ fn spawn_discovery(name: String, port: u16) {
                 return;
             }
         };
-        let mut buf = [0u8; 1024];
+        let mut buf = [0u8; 2048];
         loop {
             match sock.recv_from(&mut buf) {
                 Ok((n, src)) => {
                     let msg = String::from_utf8_lossy(&buf[..n]);
-                    if msg.trim_start().starts_with("MEDIA_DISCOVER") {
-                        let reply = json!({ "app": "media-server", "name": name, "port": port }).to_string();
+                    let trimmed = msg.trim();
+                    if trimmed.starts_with("MEDIA_DISCOVER_V2|") {
+                        let parts: Vec<&str> = trimmed.split('|').collect();
+                        if parts.len() == 5 {
+                            let dev = parts[1];
+                            let ts = parts[2];
+                            let nonce = parts[3];
+                            let sig = parts[4];
+                            let payload = format!("DISCOVER\n{}\n{}\n{}", dev, ts, nonce);
+                            if valid_ts(ts) {
+                                if let Some(secret) = approved_secret(&approved, dev) {
+                                    if verify_signature(&secret, &payload, sig) {
+                                        let reply = json!({
+                                            "app": "media-server",
+                                            "trusted": true,
+                                            "server_id": &server_id,
+                                            "name": &name,
+                                            "port": port
+                                        }).to_string();
+                                        let _ = sock.send_to(reply.as_bytes(), src);
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if trimmed.starts_with("MEDIA_DISCOVER") {
+                        // Неразрешённому клиенту не раскрываем постоянный id и имя устройства.
+                        let reply = json!({ "app": "media-server", "trusted": false, "name": "media-server", "port": port }).to_string();
                         let _ = sock.send_to(reply.as_bytes(), src);
                     }
                 }
@@ -306,11 +357,12 @@ fn main() {
     println!("media-server: {{http://{}}}", addr);
     println!("Корневая папка: {}", config.root.display());
     println!("Имя сервера: {}", config.name);
+    println!("ID сервера: {}", config.id);
     println!("Маскировка для чужих запросов: {}", SERVER_BANNER);
     println!("Папка данных (allowed.json / access.log): {}", config.data_dir.display());
     println!("Разрешённых устройств: {}", approved.lock().unwrap().len());
 
-    spawn_discovery(config.name.clone(), config.port);
+    spawn_discovery(config.name.clone(), config.id.clone(), config.port, Arc::clone(&approved));
 
     let approval_tx: Option<Sender<ApprovalReq>> = if config.background {
         println!("Фоновый режим: пускаются только устройства из allowed.json.");
@@ -496,7 +548,7 @@ fn handle(
     let ua = header_val(&request, "User-Agent");
 
     // Наши эндпоинты. Всё остальное — фасад обычного веб-сервера.
-    let is_api = matches!(path_part.as_str(), "/list" | "/search" | "/download");
+    let is_api = matches!(path_part.as_str(), "/list" | "/search" | "/download" | "/identity");
 
     // Идентификатор устройства присылает только наше приложение
     // (заголовки X-Device-* или query dev/dn для потока libVLC).
@@ -551,6 +603,8 @@ fn handle(
         respond_list(request, &state.config, &rel)
     } else if path_part == "/search" {
         respond_search(request, &state.config, &search_q, &rel)
+    } else if path_part == "/identity" {
+        respond_identity(request, &state.config)
     } else {
         respond_download(request, &state.config, &rel)
     };
@@ -637,6 +691,15 @@ fn respond_json(request: Request, code: u16, value: Value) -> u16 {
     code
 }
 
+
+fn respond_identity(request: Request, config: &Config) -> u16 {
+    respond_json(request, 200, json!({
+        "server_id": &config.id,
+        "server_name": &config.name,
+        "port": config.port
+    }))
+}
+
 fn respond_list(request: Request, config: &Config, rel: &str) -> u16 {
     let dir = match resolve(&config.root, rel) {
         Some(p) => p,
@@ -646,7 +709,7 @@ fn respond_list(request: Request, config: &Config, rel: &str) -> u16 {
         Ok(r) => r,
         Err(_) => return respond_text(request, 404, "not found"),
     };
-    let mut list: Vec<(String, bool, u64)> = Vec::new();
+    let mut list: Vec<(String, bool, u64, u64, u64, bool)> = Vec::new();
     for item in read {
         if let Ok(entry) = item {
             if fs::symlink_metadata(entry.path()).map(|m| m.file_type().is_symlink()).unwrap_or(true) { continue; }
@@ -654,14 +717,47 @@ fn respond_list(request: Request, config: &Config, rel: &str) -> u16 {
             let name = entry.file_name().to_string_lossy().to_string();
             let is_dir = meta.is_dir();
             let size = if is_dir { 0 } else { meta.len() };
-            list.push((name, is_dir, size));
+            let (child_count, direct_size, meta_complete) = if is_dir {
+                shallow_dir_meta(&entry.path(), 512)
+            } else {
+                (0, 0, true)
+            };
+            list.push((name, is_dir, size, child_count, direct_size, meta_complete));
         }
     }
     list.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.to_lowercase().cmp(&b.0.to_lowercase())));
     let entries: Vec<Value> = list.iter()
-        .map(|(name, is_dir, size)| json!({ "name": name, "is_dir": is_dir, "size": size }))
+        .map(|(name, is_dir, size, child_count, direct_size, meta_complete)| json!({
+            "name": name,
+            "is_dir": is_dir,
+            "size": size,
+            "child_count": child_count,
+            "direct_size": direct_size,
+            "meta_complete": meta_complete
+        }))
         .collect();
-    respond_json(request, 200, json!({ "path": rel, "abs_path": dir.display().to_string(), "entries": entries }))
+    respond_json(request, 200, json!({ "path": rel, "server_id": &config.id, "server_name": &config.name, "port": config.port, "entries": entries }))
+}
+
+
+fn shallow_dir_meta(path: &Path, limit: u64) -> (u64, u64, bool) {
+    let read = match fs::read_dir(path) {
+        Ok(r) => r,
+        Err(_) => return (0, 0, false),
+    };
+    let mut count = 0u64;
+    let mut bytes = 0u64;
+    for item in read {
+        if count >= limit {
+            return (count, bytes, false);
+        }
+        let entry = match item { Ok(e) => e, Err(_) => continue };
+        if fs::symlink_metadata(entry.path()).map(|m| m.file_type().is_symlink()).unwrap_or(true) { continue; }
+        let m = match entry.metadata() { Ok(m) => m, Err(_) => continue };
+        count += 1;
+        if m.is_file() { bytes = bytes.saturating_add(m.len()); }
+    }
+    (count, bytes, true)
 }
 
 fn respond_search(request: Request, config: &Config, query: &str, rel: &str) -> u16 {
