@@ -90,6 +90,7 @@
                 <TextView android:id="@+id/info_meta" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:textColor="@color/text_primary" android:textSize="14sp" />
                 <Button android:id="@+id/info_play" style="@style/PrimaryButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="▶ Смотреть" />
                 <Button android:id="@+id/info_download" style="@style/PrimaryButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:background="@drawable/btn_control_solid" android:text="Скачать" />
+                <Button android:id="@+id/info_install" style="@style/PrimaryButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Скачать и установить" android:visibility="gone" />
                 <Button android:id="@+id/info_location" style="@style/ControlButton" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="Открыть расположение" android:textColor="@color/primary" android:visibility="gone" />
             </LinearLayout>
         </LinearLayout>

@@ -37,3 +37,11 @@ Validation performed in this environment:
 - resource/id cross-check completed; only expected `android.R.*` resources are external;
 - `service.sh` passes `sh -n`;
 - full Android Gradle and Rust Cargo builds could not be executed because this environment does not contain Gradle/Android SDK/Rust toolchain.
+
+## UI animation / APK action follow-up
+- Folder contents now enter as a staggered right-to-left cascade per visible row instead of moving the whole list at once.
+- Row title and subtitle fade/slide in independently with a small delay so text does not pop abruptly.
+- Skeleton is delayed for fast LAN responses and appears only for noticeable loads.
+- Skeleton rows now use a moving darker shimmer band from left to right, with slight phase offsets between rows.
+- Shimmer animation is stopped when loading finishes, the activity pauses, or the activity is destroyed.
+- APK info panel restored: before download it shows Download + Download and install; after a complete download it shows Download again + Install.

@@ -12,6 +12,7 @@
     <color name="list_pressed">#E3EEFF</color>
     <color name="surface_alt">#EAF1FB</color>
     <color name="accent_soft">#22FF7043</color>
+    <color name="skeleton_shimmer">#C4CDD8</color>
     <color name="skeleton">#DDE3EB</color>
     <color name="scroll_thumb">#809AA7B4</color>
 </resources>
