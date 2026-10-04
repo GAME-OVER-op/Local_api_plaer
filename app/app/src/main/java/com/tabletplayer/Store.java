@@ -13,6 +13,7 @@ public class Store {
     static final String KEY_WATCHED = "watched_versions_v2";
     static final String KEY_POS = "positions_versions_v2";
     static final String KEY_LONG_JUMP = "long_jump_seconds";
+    static final String KEY_SMOOTH_VIDEO = "smooth_video_60";
     public static final int DEFAULT_LONG_JUMP_SECONDS = 90;
     static final String KEY_VOLUME = "boost_volume";
     static final String KEY_ASPECT = "aspect_mode";
@@ -134,6 +135,14 @@ public class Store {
 
     public static int getLongJumpSeconds(Context c) {
         return clampLongJump(prefsJump(c));
+    }
+
+    public static boolean getSmoothVideo(Context c) {
+        return App.prefs(c).getBoolean(KEY_SMOOTH_VIDEO, false);
+    }
+
+    public static void setSmoothVideo(Context c, boolean enabled) {
+        App.prefs(c).edit().putBoolean(KEY_SMOOTH_VIDEO, enabled).apply();
     }
 
     private static int prefsJump(Context c) {

@@ -5,13 +5,14 @@ plugins {
 android {
     namespace 'com.tabletplayer'
     compileSdk 34
+    buildToolsVersion '34.0.0'
 
     defaultConfig {
         applicationId "com.tabletplayer"
         minSdk 19
         targetSdk 22
-        versionCode 6
-        versionName "4.2"
+        versionCode 7
+        versionName "4.3"
         ndk { abiFilters 'armeabi-v7a' }
         vectorDrawables { useSupportLibrary true }
     }
@@ -52,6 +53,7 @@ dependencies {
     implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
     implementation 'androidx.media:media:1.4.3'
     implementation 'org.videolan.android:libvlc-all:3.5.1'
+    testImplementation 'junit:junit:4.13.2'
 }
 
 

@@ -50,6 +50,10 @@ public class SettingsActivity extends AppCompatActivity {
         longJump = findViewById(R.id.long_jump_seconds);
         setupNumberField(longJump, Store.getLongJumpSeconds(this));
 
+        SwitchCompat smoothSwitch = findViewById(R.id.smooth_video_switch);
+        smoothSwitch.setChecked(Store.getSmoothVideo(this));
+        smoothSwitch.setOnCheckedChangeListener((btn, checked) -> Store.setSmoothVideo(this, checked));
+
         Spinner contentLoadSpinner = findViewById(R.id.content_load_mode_spinner);
         ArrayAdapter<String> contentLoadAdapter = labelAdapter(CONTENT_LOAD_LABELS);
         contentLoadSpinner.setAdapter(contentLoadAdapter);

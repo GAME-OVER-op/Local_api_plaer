@@ -5,4 +5,6 @@
     <string name="menu_settings">Настройки</string>
     <string name="dark_theme">Тёмная тема</string>
     <string name="dark_theme_hint">Переключает оформление между светлой и тёмной темой.</string>
+    <string name="smooth_video_title">Сглаживание до 60 FPS</string>
+    <string name="smooth_video_hint">Экспериментальное смешивание соседних кадров во время просмотра. Включается для видео ниже 50 FPS. При недостаточной производительности используется обычный вывод. Возможны двойные контуры; файл не изменяется.</string>
 </resources>

@@ -7,11 +7,15 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Build;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.view.GestureDetector;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.TextureView;
+import android.graphics.SurfaceTexture;
+import android.view.Surface;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.ImageButton;
@@ -28,6 +32,7 @@ import org.videolan.libvlc.LibVLC;
 import org.videolan.libvlc.Media;
 import org.videolan.libvlc.MediaPlayer;
 import org.videolan.libvlc.util.VLCVideoLayout;
+import org.videolan.libvlc.interfaces.IMedia;
 
 import java.io.File;
 import java.io.InputStream;
@@ -77,7 +82,29 @@ public class PlayerActivity extends AppCompatActivity {
     private LibVLC libVLC;
     private MediaPlayer player;
     private VLCVideoLayout videoLayout;
+    private TextureView smoothView;
+    private SmoothVideoRenderer smoothRenderer;
+    private Surface smoothInput;
+    private boolean smoothDisabledForSource, smoothSetting, activityActive = true;
+    private String smoothStatus = "", smoothConfiguration = "";
+    private double sourceFps;
+    private int smoothTrackId = -1;
+    private String pendingSmoothFallback = "";
+    private Uri smoothMediaUri;
+    private Thread fpsProbe;
+    private boolean fpsProbeStarted;
+    private static final java.util.concurrent.atomic.AtomicBoolean FPS_PROBE_BUSY = new java.util.concurrent.atomic.AtomicBoolean();
+    private int fpsProbeEpoch;
+    private long smoothAudioDelayUs, appliedSmoothAudioDelayUs = Long.MIN_VALUE;
+    private boolean pauseAfterSmoothRestart;
+    private final Runnable smoothStartupTimeout = this::checkSmoothStartup;
+    private final Runnable fpsProbeTimeout = () -> {
+        if (smoothRenderer != null && !FrameTiming.validFps(sourceFps)) fallbackSmooth("Анализ частоты не завершён");
+    };
     private View controls, gestureOverlay, buffering;
+    private View playerHeader;
+    private TextView batteryBadge;
+    private HeadsetBatteryMonitor batteryMonitor;
     private TextView time, gestureInfo, bufferingText, titleBar, cacheBadge, technicalCard;
     private android.widget.Button retryBtn;
     private SeekBar seek;
@@ -203,11 +230,42 @@ public class PlayerActivity extends AppCompatActivity {
         decoderMode = Store.getDecoderMode(this, DECODER_AUTO);
         loadLibVlcSettings();
         videoLayout = findViewById(R.id.video_layout);
+        smoothView = findViewById(R.id.smooth_video_view);
+        smoothSetting = Store.getSmoothVideo(this);
+        smoothView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+            @Override public void onSurfaceTextureAvailable(SurfaceTexture texture, int w, int h) {
+                if (smoothRenderer != null) smoothRenderer.setOutput(texture, w, h);
+            }
+            @Override public void onSurfaceTextureSizeChanged(SurfaceTexture texture, int w, int h) {
+                if (smoothRenderer != null) smoothRenderer.resizeOutput(w, h);
+            }
+            @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture texture) {
+                if (smoothRenderer != null) smoothRenderer.setOutput(null, 0, 0);
+                return true;
+            }
+            @Override public void onSurfaceTextureUpdated(SurfaceTexture texture) {}
+        });
         controls = findViewById(R.id.controls);
         gestureOverlay = findViewById(R.id.gesture_overlay);
         buffering = findViewById(R.id.buffering);
         bufferingText = findViewById(R.id.buffering_text);
         cacheBadge = findViewById(R.id.cache_badge);
+        playerHeader = findViewById(R.id.player_header);
+        playerHeader.addOnLayoutChangeListener((v,l,t,r,bottom,ol,ot,or,ob) -> {
+            if (technicalCard != null && bottom > t) {
+                android.widget.FrameLayout.LayoutParams params = (android.widget.FrameLayout.LayoutParams) technicalCard.getLayoutParams();
+                int margin = bottom - t + Math.round(8 * getResources().getDisplayMetrics().density);
+                if (params.topMargin != margin) { params.topMargin = margin; technicalCard.setLayoutParams(params); }
+            }
+        });
+        batteryBadge = findViewById(R.id.battery_badge);
+        batteryMonitor = new HeadsetBatteryMonitor(this, (connected, deviceName, percentage) -> {
+            batteryBadge.setVisibility(connected ? View.VISIBLE : View.GONE);
+            batteryBadge.setText(percentage >= 0 ? percentage + "%" : "—%");
+            batteryBadge.setTextColor(percentage >= 0 && percentage <= 20 ? 0xFFFFCE7A : 0xFFFFFFFF);
+            batteryBadge.setContentDescription("Заряд наушников " + (deviceName == null ? "" : deviceName)
+                    + ": " + (percentage >= 0 ? percentage + "%" : "недоступен"));
+        });
         technicalCard = findViewById(R.id.technical_card);
         retryBtn = findViewById(R.id.buffer_retry);
         titleBar = findViewById(R.id.title_bar);
@@ -330,10 +388,187 @@ public class PlayerActivity extends AppCompatActivity {
                 + " skipLoop=" + libVlcSkipLoopFilter);
     }
 
+    private void beginVideoOutput(final MediaPlayer mp, final int generation) {
+        if (!smoothSetting || smoothDisabledForSource) {
+            mp.attachViews(videoLayout, null, false, false);
+            videoViewsAttached = true;
+            if (activityActive) mp.play();
+            mp.setRate(speeds[speedIdx]);
+            return;
+        }
+        smoothStatus = "Сглаживание: анализ видео…";
+        smoothView.setVisibility(View.VISIBLE);
+        videoLayout.setVisibility(View.GONE);
+        smoothRenderer = new SmoothVideoRenderer(new SmoothVideoRenderer.Listener() {
+            @Override public void onReady(SmoothVideoRenderer owner, Surface input) {
+                ui.post(() -> {
+                    if (!isCurrentGeneration(generation) || player != mp || smoothRenderer != owner) return;
+                    try {
+                        smoothInput = input;
+                        if (!activityActive) return;
+                        mp.getVLCVout().setVideoSurface(input, null);
+                        mp.getVLCVout().attachViews();
+                        videoViewsAttached = true;
+                        mp.getVLCVout().setWindowSize(640, 360);
+                        if (activityActive) {
+                            mp.play(); mp.setRate(speeds[speedIdx]);
+                            ui.postDelayed(smoothStartupTimeout, 10000);
+                        }
+                    } catch (Throwable error) { fallbackSmooth("Вывод GPU недоступен"); }
+                });
+            }
+            @Override public void onFallback(SmoothVideoRenderer owner, String reason) {
+                ui.post(() -> {
+                    if (isCurrentGeneration(generation) && smoothRenderer == owner) fallbackSmooth(reason);
+                });
+            }
+            @Override public void onAudioDelay(SmoothVideoRenderer owner, long microseconds) {
+                ui.post(() -> {
+                    if (isCurrentGeneration(generation) && smoothRenderer == owner && player == mp) {
+                        smoothAudioDelayUs = microseconds;
+                        applySmoothAudioDelay();
+                    }
+                });
+            }
+        });
+        smoothRenderer.start();
+        if (smoothView.isAvailable()) smoothRenderer.setOutput(smoothView.getSurfaceTexture(),
+                smoothView.getWidth(), smoothView.getHeight());
+    }
+
+    private IMedia.VideoTrack selectedVideoTrack() {
+        if (player == null) return null;
+        IMedia media = player.getMedia();
+        if (media == null) return null;
+        try {
+            int selected = player.getVideoTrack();
+            for (int i = 0; i < media.getTrackCount(); i++) {
+                IMedia.Track track = media.getTrack(i);
+                if (track instanceof IMedia.VideoTrack && track.id == selected) return (IMedia.VideoTrack) track;
+            }
+            return null;
+        } finally { media.release(); }
+    }
+
+    private void checkSmoothStartup() {
+        if (smoothRenderer != null && activityActive && (!videoViewsAttached || !smoothRenderer.hasPresentedFrame()))
+            fallbackSmooth("Не удалось запустить вывод GPU");
+    }
+
+    private void applySmoothAudioDelay() {
+        if (player == null || smoothRenderer == null || !started || player.getAudioTracksCount() == 0) return;
+        if (appliedSmoothAudioDelayUs != smoothAudioDelayUs) {
+            if (player.setAudioDelay(smoothAudioDelayUs)) appliedSmoothAudioDelayUs = smoothAudioDelayUs;
+            else fallbackSmooth("Не удалось синхронизировать звук");
+        }
+    }
+
+    private void updateSmoothMetadata() {
+        if (smoothRenderer == null || player == null || !activityActive) return;
+        try {
+            IMedia.VideoTrack track = selectedVideoTrack();
+            if (track == null) return;
+            if (smoothTrackId != track.id) {
+                smoothTrackId = track.id;
+                sourceFps = 0; smoothConfiguration = "";
+                fpsProbeEpoch++;
+                if (fpsProbe != null) fpsProbe.interrupt();
+                fpsProbeStarted = false;
+            }
+            if (track.frameRateDen > 0 && track.frameRateNum > 0)
+                sourceFps = (double) track.frameRateNum / track.frameRateDen;
+            if (track.projection != IMedia.VideoTrack.Projection.Rectangular) {
+                fallbackSmooth("Объёмное видео: обычный вывод"); return;
+            }
+            if (!FrameTiming.validFps(sourceFps)) {
+                probeSmoothFps();
+                return;
+            }
+            if (!FrameTiming.shouldSmooth(sourceFps)) {
+                fallbackSmooth(String.format(java.util.Locale.US, "%.2f FPS: обычный вывод", sourceFps)); return;
+            }
+            ui.removeCallbacks(fpsProbeTimeout);
+            float ratio = track.height > 0 ? (float) track.width / track.height : 16f / 9f;
+            if (track.sarDen > 0 && track.sarNum > 0) ratio *= (float) track.sarNum / track.sarDen;
+            if (track.orientation >= IMedia.VideoTrack.Orientation.LeftTop) ratio = 1f / ratio;
+            if (!(ratio > 0.05f && ratio < 20f)) ratio = 16f / 9f;
+            int width = Math.min(1280, Math.max(640, Math.max(smoothView.getWidth(), smoothView.getHeight())));
+            int height = Math.max(2, Math.round(width / ratio));
+            if (height > 1280) { height = 1280; width = Math.max(2, Math.round(height * ratio)); }
+            String key = sourceFps + ":" + width + ":" + height + ":" + ratio + ":" + speeds[speedIdx] + ":" + aspectIdx;
+            if (!key.equals(smoothConfiguration)) {
+                smoothConfiguration = key;
+                player.getVLCVout().setWindowSize(width, height);
+                int naturalHeight = Math.max(2, track.orientation >= IMedia.VideoTrack.Orientation.LeftTop ? track.width : track.height);
+                int naturalWidth = Math.max(2, Math.round(naturalHeight * ratio));
+                smoothRenderer.configure(sourceFps, width, height, naturalWidth, naturalHeight, ratio, speeds[speedIdx], aspectIdx);
+                smoothStatus = String.format(java.util.Locale.US, speeds[speedIdx] * sourceFps < 50
+                        ? "Сглаживание: %.2f → 60 FPS" : "%.2f FPS · без генерации на этой скорости", sourceFps);
+                PlayerDiagnostics.log(this, "smoothing", smoothStatus);
+            }
+        } catch (Throwable error) { fallbackSmooth("Не удалось прочитать параметры видео"); }
+    }
+
+    private void probeSmoothFps() {
+        if (fpsProbeStarted || smoothMediaUri == null) return;
+        fpsProbeStarted = true;
+        if (!FPS_PROBE_BUSY.compareAndSet(false, true)) { fallbackSmooth("Анализатор частоты занят"); return; }
+        final int generation = playbackGeneration;
+        final int epoch = ++fpsProbeEpoch;
+        final SmoothVideoRenderer owner = smoothRenderer;
+        final Uri uri = sourceMode == SourceMode.DIRECT_REMOTE ? Uri.parse(streamUrl(path)) : smoothMediaUri;
+        fpsProbe = new Thread(() -> {
+            double result = 0;
+            try (TransferCoordinator.Lease lease = TransferCoordinator.get().acquire(
+                    TransferCoordinator.Priority.PLAYBACK_METADATA, "video FPS")) {
+                result = VideoFrameRateProbe.read(uri);
+            } catch (Exception ignored) {} finally { FPS_PROBE_BUSY.set(false); }
+            final double detected = result;
+            ui.post(() -> {
+                if (!isCurrentGeneration(generation) || smoothRenderer != owner || epoch != fpsProbeEpoch) return;
+                if (FrameTiming.validFps(sourceFps)) return;
+                if (!FrameTiming.validFps(detected)) { fallbackSmooth("Частота видео неизвестна"); return; }
+                sourceFps = detected;
+                updateSmoothMetadata();
+            });
+        }, "VideoFrameRateProbe");
+        fpsProbe.setDaemon(true);
+        fpsProbe.start();
+        ui.postDelayed(fpsProbeTimeout, 8000);
+    }
+
+    private void fallbackSmooth(String reason) {
+        if (destroyed || player == null || smoothRenderer == null) return;
+        if (!activityActive) { pendingSmoothFallback = reason; return; }
+        smoothDisabledForSource = true;
+        smoothStatus = "Сглаживание отключено: " + reason;
+        PlayerDiagnostics.log(this, "smoothing-fallback", reason);
+        long position = Math.max(pendingResumeMs, Math.max(0, player.getTime()));
+        boolean paused = started && !player.isPlaying();
+        String override = currentMediaOverrideUri;
+        SourceMode source = sourceMode;
+        startSource(path, name, position, source, true, override);
+        pauseAfterSmoothRestart = paused;
+    }
+
+    private void releaseSmoothRenderer() {
+        ui.removeCallbacks(smoothStartupTimeout);
+        ui.removeCallbacks(fpsProbeTimeout);
+        fpsProbeEpoch++;
+        if (fpsProbe != null) { fpsProbe.interrupt(); fpsProbe = null; }
+        fpsProbeStarted = false;
+        SmoothVideoRenderer renderer = smoothRenderer;
+        smoothRenderer = null; smoothInput = null;
+        if (renderer != null) renderer.close();
+        sourceFps = 0; smoothConfiguration = ""; smoothMediaUri = null;
+        smoothTrackId = -1; pendingSmoothFallback = "";
+        smoothAudioDelayUs = 0; appliedSmoothAudioDelayUs = Long.MIN_VALUE;
+        if (smoothView != null) smoothView.setVisibility(View.GONE);
+        if (videoLayout != null) videoLayout.setVisibility(View.VISIBLE);
+    }
+
     private MediaPlayer createMediaPlayer(final int generation) {
         MediaPlayer mp = new MediaPlayer(libVLC);
-        mp.attachViews(videoLayout, null, false, false);
-        videoViewsAttached = true;
         PlayerDiagnostics.log(this, "player", "create gen=" + generation);
         mp.setEventListener(event -> {
             final int type = event.type;
@@ -347,12 +582,14 @@ public class PlayerActivity extends AppCompatActivity {
     private void releaseCurrentPlayer() {
         MediaPlayer old = player;
         player = null;
-        if (old == null) return;
+        if (old == null) { releaseSmoothRenderer(); return; }
         try { old.setEventListener(null); } catch (Throwable ignored) {}
         try { old.stop(); } catch (Throwable ignored) {}
         try { old.detachViews(); } catch (Throwable ignored) {}
+        try { old.getVLCVout().detachViews(); } catch (Throwable ignored) {}
         videoViewsAttached = false;
         try { old.release(); } catch (Throwable ignored) {}
+        releaseSmoothRenderer();
         PlayerDiagnostics.log(this, "player", "release");
     }
 
@@ -384,6 +621,7 @@ public class PlayerActivity extends AppCompatActivity {
             stopPlaybackCache(false);
         }
         int generation = ++playbackGeneration;
+        pauseAfterSmoothRestart = false;
         ui.removeCallbacks(reconnectAgain);
         path = p;
         name = nm;
@@ -430,9 +668,9 @@ public class PlayerActivity extends AppCompatActivity {
         Media media = buildMedia(p, mode, mediaOverrideUri);
         player = mp;
         mp.setMedia(media);
+        smoothMediaUri = media.getUri();
         media.release();
-        mp.play();
-        mp.setRate(speeds[speedIdx]);
+        beginVideoOutput(mp, generation);
         showControls();
     }
 
@@ -450,13 +688,22 @@ public class PlayerActivity extends AppCompatActivity {
         switch (type) {
             case MediaPlayer.Event.Vout:
                 currentVoutCount = Math.max(0, vout);
+                if (vout > 0 && smoothRenderer != null && smoothRenderer.hasPresentedFrame())
+                    ui.removeCallbacks(smoothStartupTimeout);
+                updateSmoothMetadata();
+                if (!isCurrentGeneration(generation)) return;
                 updateTechnicalCard(true);
                 break;
             case MediaPlayer.Event.Playing:
+                if (smoothRenderer != null) smoothRenderer.setPlaying(true);
+                updateSmoothMetadata();
+                if (!isCurrentGeneration(generation)) return;
                 Store.markWatched(this, historyKey);
                 reconnectAttempts = 0;
                 reconnecting = false;
                 started = true;
+                applySmoothAudioDelay();
+                if (!isCurrentGeneration(generation)) return;
                 terminalHandled = false;
                 setPlaybackPhase(sourceMode == SourceMode.DIRECT_REMOTE ? PlaybackPhase.PLAYING_DIRECT : PlaybackPhase.PLAYING_LOCAL);
                 if (sourceMode == SourceMode.LOCAL_CACHE) {
@@ -467,14 +714,20 @@ public class PlayerActivity extends AppCompatActivity {
                     hideBuffering();
                 }
                 if (pendingResumeMs > 0) {
+                    if (smoothRenderer != null) smoothRenderer.reset();
                     player.setTime(pendingResumeMs);
                     pendingResumeMs = 0;
                 }
                 player.setVolume(volume);
                 applyAspect();
+                if (!isCurrentGeneration(generation)) return;
                 updatePlayIcon();
                 updatePlaybackState();
                 if (sourceMode == SourceMode.LOCAL_CACHE) startPrefetchWindow();
+                if (pauseAfterSmoothRestart) {
+                    pauseAfterSmoothRestart = false;
+                    setPlaying(false);
+                }
                 break;
             case MediaPlayer.Event.Buffering:
                 if (!started) {
@@ -490,14 +743,23 @@ public class PlayerActivity extends AppCompatActivity {
                 }
                 break;
             case MediaPlayer.Event.Paused:
+                if (smoothRenderer != null) smoothRenderer.setPlaying(false);
                 updatePlayIcon();
                 updatePlaybackState();
                 break;
             case MediaPlayer.Event.EndReached:
+                if (smoothRenderer != null) smoothRenderer.setPlaying(false);
                 handleEnd(generation);
                 break;
             case MediaPlayer.Event.EncounteredError:
+                if (smoothRenderer != null) {
+                    fallbackSmooth("Декодер не поддерживает вывод GPU");
+                    break;
+                }
                 handleDrop(generation);
+                break;
+            case MediaPlayer.Event.ESSelected:
+                updateSmoothMetadata();
                 break;
         }
     }
@@ -680,6 +942,8 @@ public class PlayerActivity extends AppCompatActivity {
         ui.removeCallbacks(reconnectAgain);
         stopPrefetchWindow();
         releaseCurrentPlayer();
+        smoothDisabledForSource = false;
+        smoothStatus = "";
         stopPlaybackCache(false);
         path = p; name = nm;
         currentMs = 0; duration = 0; pendingResumeMs = resume;
@@ -919,6 +1183,7 @@ public class PlayerActivity extends AppCompatActivity {
         PlayerDiagnostics.log(this, "seek", "target=" + targetMs + " duration=" + duration + " source=" + sourceMode);
         if (targetMs < 0) targetMs = 0;
         if (duration > 0 && targetMs > duration) targetMs = duration;
+        if (smoothRenderer != null) smoothRenderer.reset();
         if (sourceMode == SourceMode.LOCAL_CACHE && cacheTask != null && duration > 0) {
             long extra = 32L * 1024L * 1024L;
             if (!cacheTask.hasBytesForTime(targetMs, duration, extra)) {
@@ -961,6 +1226,7 @@ public class PlayerActivity extends AppCompatActivity {
                 hideBuffering();
                 if (player != null) {
                     player.setTime(target);
+                    if (smoothRenderer != null) smoothRenderer.reset();
                     setPlaying(true);
                 }
             } else {
@@ -1331,6 +1597,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void setPlaying(boolean play) {
         if (destroyed || player == null) return;
+        if (smoothRenderer != null) smoothRenderer.setPlaying(play);
         if (play && !player.isPlaying()) player.play();
         else if (!play && player.isPlaying()) player.pause();
         updatePlayIcon();
@@ -1358,6 +1625,8 @@ public class PlayerActivity extends AppCompatActivity {
     private void cycleSpeed() {
         speedIdx = (speedIdx + 1) % speeds.length;
         if (player != null) player.setRate(speeds[speedIdx]);
+        smoothConfiguration = "";
+        updateSmoothMetadata();
         speed.setText(speeds[speedIdx] + "x");
     }
 
@@ -1371,6 +1640,12 @@ public class PlayerActivity extends AppCompatActivity {
     private void applyAspect() {
         if (player == null) return;
         attachVideoViewsIfNeeded();
+        if (smoothRenderer != null) {
+            player.setAspectRatio(null);
+            player.setScale(0);
+            updateSmoothMetadata();
+            return;
+        }
         switch (aspectIdx) {
             case 0:
                 player.setAspectRatio(null);
@@ -1441,7 +1716,11 @@ public class PlayerActivity extends AppCompatActivity {
     private void attachVideoViewsIfNeeded() {
         if (player == null || videoViewsAttached || videoLayout == null || destroyed) return;
         try {
-            player.attachViews(videoLayout, null, false, false);
+            if (smoothRenderer != null) {
+                if (smoothInput == null) return;
+                player.getVLCVout().setVideoSurface(smoothInput, null);
+                player.getVLCVout().attachViews();
+            } else player.attachViews(videoLayout, null, false, false);
             videoViewsAttached = true;
             PlayerDiagnostics.log(this, "surface", "attach");
         } catch (Throwable e) {
@@ -1453,6 +1732,7 @@ public class PlayerActivity extends AppCompatActivity {
         if (player == null || !videoViewsAttached) return;
         try {
             player.detachViews();
+            player.getVLCVout().detachViews();
             PlayerDiagnostics.log(this, "surface", "detach");
         } catch (Throwable e) {
             PlayerDiagnostics.log(this, "surface-detach-error", e);
@@ -1639,6 +1919,7 @@ public class PlayerActivity extends AppCompatActivity {
         text.append("\n").append(decoderNames[Math.max(0, Math.min(decoderMode, decoderNames.length - 1))])
                 .append(" · ").append(speeds[speedIdx]).append('x')
                 .append(" · Vout ").append(currentVoutCount);
+        if (smoothSetting) text.append("\n").append(smoothStatus);
         text.append("\nсоединения приложения: ").append(TransferCoordinator.get().activeRemoteTransfers())
                 .append('/').append(TransferCoordinator.get().maxRemoteTransfers());
         technicalCard.setText(text.toString());
@@ -1655,6 +1936,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void setControlsVisible(boolean visible) {
         controlsVisible = visible;
+        if (playerHeader != null) playerHeader.setVisibility(visible ? View.VISIBLE : View.GONE);
         if (controls != null) controls.setVisibility(visible ? View.VISIBLE : View.GONE);
         if (titleBar != null) titleBar.setVisibility(visible ? View.VISIBLE : View.GONE);
         if (technicalCard != null) {
@@ -1740,8 +2022,11 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void updateTime() {
         if (player == null) return;
+        int generation = playbackGeneration;
         duration = player.getLength();
         currentMs = player.getTime();
+        updateSmoothMetadata();
+        if (!isCurrentGeneration(generation) || player == null) return;
         time.setText(Util.fmtTime(currentMs) + " / " + Util.fmtTime(duration));
         if (duration > 0 && !dragging) seek.setProgress((int) (currentMs * 1000 / duration));
         updateCacheProgressUi();
@@ -1775,18 +2060,30 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     protected void onStart() {
         super.onStart();
+        activityActive = true;
+        if (!pendingSmoothFallback.isEmpty()) fallbackSmooth(pendingSmoothFallback);
+        startBatteryMonitoring();
         if (session != null) {
             try { session.setActive(true); updatePlaybackState(); } catch (Throwable ignored) {}
         }
         ui.post(ticker);
         scheduleImmersiveReapply();
         attachVideoViewsIfNeeded();
+        if (player != null && videoViewsAttached && !started) {
+            player.play(); player.setRate(speeds[speedIdx]);
+        }
         ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); }, 180L);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        boolean setting = Store.getSmoothVideo(this);
+        if (setting != smoothSetting) {
+            smoothSetting = setting;
+            smoothDisabledForSource = false;
+            if (player != null) restartCurrentSourceForDecoder();
+        }
         updateLongJumpButton();
         if (session != null) {
             try { session.setActive(true); updatePlaybackState(); } catch (Throwable ignored) {}
@@ -1795,6 +2092,25 @@ public class PlayerActivity extends AppCompatActivity {
         attachVideoViewsIfNeeded();
         ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); }, 220L);
         PlayerDiagnostics.log(this, "lifecycle", "resume wasPlaying=" + wasPlayingBeforeStop);
+    }
+
+    private void startBatteryMonitoring() {
+        if (batteryMonitor == null) return;
+        if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission("android.permission.BLUETOOTH_CONNECT")
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            if (!App.prefs(this).getBoolean("bluetooth_permission_asked", false)) {
+                App.prefs(this).edit().putBoolean("bluetooth_permission_asked", true).apply();
+                requestPermissions(new String[]{"android.permission.BLUETOOTH_CONNECT"}, 61);
+            }
+            return;
+        }
+        batteryMonitor.start();
+    }
+
+    @Override public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(code, permissions, results);
+        if (code == 61 && activityActive && results.length > 0
+                && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) startBatteryMonitoring();
     }
 
     private void updateLongJumpButton() {
@@ -1816,6 +2132,9 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     protected void onStop() {
         super.onStop();
+        activityActive = false;
+        if (batteryMonitor != null) batteryMonitor.stop();
+        ui.removeCallbacks(smoothStartupTimeout);
         ui.removeCallbacks(ticker);
         savePosition(true);
         wasPlayingBeforeStop = player != null && player.isPlaying();
@@ -1841,6 +2160,7 @@ public class PlayerActivity extends AppCompatActivity {
     protected void onDestroy() {
         PlayerDiagnostics.log(this, "lifecycle", "destroy pos=" + currentMs + " source=" + sourceMode);
         destroyed = true;
+        if (batteryMonitor != null) batteryMonitor.stop();
         playbackGeneration++;
         setPlaybackPhase(PlaybackPhase.DESTROYED);
         super.onDestroy();
