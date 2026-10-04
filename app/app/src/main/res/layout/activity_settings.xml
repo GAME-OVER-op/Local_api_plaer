@@ -14,6 +14,23 @@
         android:focusableInTouchMode="true"
         android:padding="20dp">
 
+        <LinearLayout
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="18dp" android:orientation="vertical"
+            android:background="@drawable/card_bg" android:padding="18dp">
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="Кнопка длинной перемотки" android:textSize="17sp"
+                android:textStyle="bold" android:textColor="@color/text_primary" />
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="Шаг вперёд в секундах: от 1 до 3600. По умолчанию — 90 секунд."
+                android:textColor="@color/text_secondary" android:textSize="12sp" />
+            <EditText android:id="@+id/long_jump_seconds" android:layout_width="match_parent"
+                android:layout_height="48dp" android:layout_marginTop="10dp" android:padding="12dp"
+                android:background="@drawable/edit_bg" android:inputType="number" android:maxLength="4"
+                android:imeOptions="actionDone" android:singleLine="true" android:selectAllOnFocus="true"
+                android:textColor="@color/text_primary" android:textSize="16sp" />
+        </LinearLayout>
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -242,7 +259,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="По умолчанию: 8 для текущей серии, 3 для предзагрузки. Общий лимит приложения — 20 соединений."
+                android:text="По умолчанию: 8 для текущей серии, 3 для предзагрузки. Общий лимит приложения — 12 соединений."
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp" />
 

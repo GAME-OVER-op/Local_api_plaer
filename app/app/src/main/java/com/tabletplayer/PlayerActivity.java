@@ -59,7 +59,6 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private static final int JUMP_MS = 10000;
-    private static final int JUMP90_MS = 90000;
     private static final int AUTO_HIDE_MS = 3500;
     private static final long SWIPE_FULL_WIDTH_MS = 120000;
     private static final int NET_CACHING = 4000;
@@ -70,6 +69,9 @@ public class PlayerActivity extends AppCompatActivity {
     private static final int DECODER_SOFTWARE = 2;
 
     private String base, path, name, folder, serverName, serverId;
+    private String historyKey = "", mediaVersion = "";
+    private boolean preparingIdentity, askSavedPosition;
+    private long requestedResumeMs;
     private boolean local = false;
 
     private LibVLC libVLC;
@@ -79,8 +81,8 @@ public class PlayerActivity extends AppCompatActivity {
     private TextView time, gestureInfo, bufferingText, titleBar, cacheBadge, technicalCard;
     private android.widget.Button retryBtn;
     private SeekBar seek;
-    private ImageButton prev, rew, playPause, fwd, fwd90, next, aspect, fullscreen;
-    private android.widget.Button speed;
+    private ImageButton prev, rew, playPause, fwd, next, aspect, fullscreen;
+    private android.widget.Button speed, fwd90;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private long duration = 0, currentMs = 0, pendingResumeMs = 0, seekPreview = 0;
@@ -128,7 +130,9 @@ public class PlayerActivity extends AppCompatActivity {
     private boolean directFallbackInProgress = false;
     private final Set<String> directOnlyThisSession = new HashSet<>();
     private Thread prefetchThread;
-    private volatile boolean prefetchCancelled = false;
+    private volatile int prefetchGeneration = 0;
+    private volatile PlaybackCacheTask prefetchTask;
+    private final Object prefetchLock = new Object();
 
     private final float[] speeds = {1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f};
     private int speedIdx = 0;
@@ -236,6 +240,10 @@ public class PlayerActivity extends AppCompatActivity {
 
         retryBtn.setOnClickListener(v -> {
             retryBtn.setVisibility(View.GONE);
+            if (preparingIdentity) {
+                preparePlayback(path, name, requestedResumeMs, askSavedPosition);
+                return;
+            }
             reconnectAttempts = 0;
             reconnectStep();
         });
@@ -244,7 +252,8 @@ public class PlayerActivity extends AppCompatActivity {
         rew.setOnClickListener(v -> { seekRelative(-JUMP_MS); showControls(); });
         playPause.setOnClickListener(v -> { togglePlay(); showControls(); });
         fwd.setOnClickListener(v -> { seekRelative(JUMP_MS); showControls(); });
-        fwd90.setOnClickListener(v -> { seekRelative(JUMP90_MS); showControls(); });
+        fwd90.setOnClickListener(v -> { seekRelative(Store.getLongJumpSeconds(this) * 1000); showControls(); });
+        updateLongJumpButton();
         next.setOnClickListener(v -> { playNext(); showControls(); });
         speed.setOnClickListener(v -> { cycleSpeed(); showControls(); });
         aspect.setOnClickListener(v -> { cycleAspect(); showControls(); });
@@ -444,6 +453,7 @@ public class PlayerActivity extends AppCompatActivity {
                 updateTechnicalCard(true);
                 break;
             case MediaPlayer.Event.Playing:
+                Store.markWatched(this, historyKey);
                 reconnectAttempts = 0;
                 reconnecting = false;
                 started = true;
@@ -628,22 +638,12 @@ public class PlayerActivity extends AppCompatActivity {
 
     private String streamUrl(String p) {
         return base + "/download?path=" + Util.enc(p)
+                + "&version=" + Util.enc(mediaVersion)
                 + App.authQuery(this, "/download", p, "");
     }
 
     private void askResume() {
-        long saved = Store.getPos(this, path);
-        if (saved > 5000) {
-            new AlertDialog.Builder(this)
-                    .setTitle(name)
-                    .setMessage("Продолжить с " + Util.fmtTime(saved) + "?")
-                    .setPositiveButton("Продолжить", (d, w) -> playPath(path, name, saved))
-                    .setNegativeButton("Сначала", (d, w) -> playPath(path, name, 0))
-                    .setCancelable(false)
-                    .show();
-        } else {
-            playPath(path, name, 0);
-        }
+        preparePlayback(path, name, 0, true);
     }
 
     private Media buildMedia(String p, SourceMode mode, String mediaOverrideUri) {
@@ -670,11 +670,71 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void playPath(String p, String nm, long resume) {
+        preparePlayback(p, nm, resume, false);
+    }
+
+    /** Invalidate old callbacks before closing its player/cache or selecting the next episode. */
+    private void preparePlayback(final String p, final String nm, final long resume, final boolean askSaved) {
+        if (destroyed) return;
+        final int generation = ++playbackGeneration;
+        ui.removeCallbacks(reconnectAgain);
+        stopPrefetchWindow();
+        releaseCurrentPlayer();
+        stopPlaybackCache(false);
+        path = p; name = nm;
+        currentMs = 0; duration = 0; pendingResumeMs = resume;
+        historyKey = ""; mediaVersion = "";
+        started = false; completedCurrent = false; terminalHandled = false;
+        reconnecting = false; directFallbackInProgress = false;
+        localCacheStartupWaiting = false;
+        sourceMode = local ? SourceMode.LOCAL_FILE : SourceMode.DIRECT_REMOTE;
+        preparingIdentity = true; askSavedPosition = askSaved; requestedResumeMs = resume;
+        setPlaybackPhase(PlaybackPhase.PREPARING);
+        titleBar.setText(nm);
+        if (!local) updateEpisodeIndex();
+        showBuffering("Проверка серии…");
+        final String requestBase = base, expectedServer = serverId;
+        new Thread(() -> {
+            try {
+                final FileIdentity.Info info = local ? null : FileIdentity.fetch(this, requestBase, p, expectedServer);
+                final String key = local ? FileIdentity.localKey(new File(p)) : info.key;
+                ui.post(() -> {
+                    if (!isCurrentGeneration(generation)) return;
+                    historyKey = key;
+                    if (info != null) { mediaVersion = info.version; serverId = info.serverId; }
+                    preparingIdentity = false;
+                    long saved = askSaved ? Store.getPos(this, key) : 0;
+                    if (saved > 5000) {
+                        hideBuffering();
+                        new AlertDialog.Builder(this).setTitle(nm)
+                                .setMessage("Продолжить с " + Util.fmtTime(saved) + "?")
+                                .setPositiveButton("Продолжить", (d, w) -> {
+                                    if (isCurrentGeneration(generation)) playPreparedPath(p, nm, saved);
+                                })
+                                .setNegativeButton("Сначала", (d, w) -> {
+                                    if (isCurrentGeneration(generation)) {
+                                        Store.clearPos(this, key); playPreparedPath(p, nm, 0);
+                                    }
+                                }).setCancelable(false).show();
+                    } else { playPreparedPath(p, nm, resume); }
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    if (isCurrentGeneration(generation)) {
+                        showBuffering("Не удалось проверить серию: " + e.getMessage());
+                        retryBtn.setVisibility(View.VISIBLE);
+                    }
+                });
+            }
+        }, "PlaybackIdentity").start();
+    }
+
+    private void playPreparedPath(String p, String nm, long resume) {
         if (local) {
             startSource(p, nm, resume, SourceMode.LOCAL_FILE, false);
             return;
         }
-        PlaybackCacheManager.Entry ready = PlaybackCacheManager.get().entryFor(this, base, p, nm);
+        PlaybackCacheManager.Entry ready = PlaybackCacheManager.get().entryFor(this, base, p, nm, mediaVersion);
         if (ready.finalFile.exists() && ready.finalFile.length() > 0) {
             startSource(p, nm, resume, SourceMode.LOCAL_FILE, false, Uri.fromFile(ready.finalFile).toString());
             startPrefetchWindow();
@@ -708,17 +768,15 @@ public class PlayerActivity extends AppCompatActivity {
     private void startCachePlayback(final String p, final String nm, final long resume) {
         stopPrefetchWindow();
         stopPlaybackCache(false);
-        activeCacheEntry = PlaybackCacheManager.get().entryFor(this, base, p, nm);
+        activeCacheEntry = PlaybackCacheManager.get().entryFor(this, base, p, nm, mediaVersion);
         cacheTask = new PlaybackCacheTask(this, activeCacheEntry, false, new PlaybackCacheTask.Listener() {
             @Override
             public void onCacheProgress(PlaybackCacheTask task) {
-                if (task != cacheTask) return;
                 ui.post(() -> showPrepareProgress(task));
             }
 
             @Override
             public void onCacheReady(PlaybackCacheTask task, boolean early) {
-                if (task != cacheTask) return;
                 ui.post(() -> startFromLocalCache(task, resume));
             }
 
@@ -734,14 +792,12 @@ public class PlayerActivity extends AppCompatActivity {
 
             @Override
             public void onCacheFallback(PlaybackCacheTask task, String reason) {
-                if (task != cacheTask) return;
-                ui.post(() -> fallbackToDirect(reason));
+                ui.post(() -> { if (!destroyed && task == cacheTask) fallbackToDirect(reason); });
             }
 
             @Override
             public void onCacheError(PlaybackCacheTask task, Exception error) {
-                if (task != cacheTask) return;
-                ui.post(() -> fallbackToDirect("ошибка загрузки кэша"));
+                ui.post(() -> { if (!destroyed && task == cacheTask) fallbackToDirect("ошибка загрузки кэша"); });
             }
         });
         showBuffering("Подготовка серии…");
@@ -750,7 +806,7 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void showPrepareProgress(PlaybackCacheTask task) {
-        if (task == null || task != cacheTask || sourceMode == SourceMode.LOCAL_CACHE) return;
+        if (destroyed || task == null || task != cacheTask || playbackPhase != PlaybackPhase.PREPARING) return;
         showBuffering("Подготовка кэша: " + cacheProgressLine(task, true));
         updateTechnicalCard(false);
     }
@@ -800,7 +856,7 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void startFromLocalCache(PlaybackCacheTask task, long resume) {
-        if (destroyed || task == null || task != cacheTask || sourceMode == SourceMode.LOCAL_CACHE) return;
+        if (destroyed || task == null || task != cacheTask || cacheProxy != null) return;
         try {
             if (cacheProxy != null) cacheProxy.close();
             cacheProxy = new PlaybackProxyServer(task);
@@ -926,7 +982,15 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void stopPrefetchWindow() {
-        prefetchCancelled = true;
+        PlaybackCacheTask active;
+        synchronized (prefetchLock) {
+            prefetchGeneration++;
+            active = prefetchTask;
+            prefetchTask = null;
+        }
+        if (active != null && !active.complete()) {
+            active.close(); PlaybackCacheManager.get().deleteEntry(active.entry());
+        }
         Thread t = prefetchThread;
         prefetchThread = null;
         if (t != null) {
@@ -937,22 +1001,39 @@ public class PlayerActivity extends AppCompatActivity {
     private void startPrefetchWindow() {
         if (local || episodePaths.isEmpty() || episodeIndex < 0 || prefetchThread != null && prefetchThread.isAlive()) return;
         if (cacheTask != null && !cacheTask.complete()) return;
-        prefetchCancelled = false;
+        final int generation = ++prefetchGeneration;
         final int start = episodeIndex + 1;
         final int end = Math.min(episodePaths.size(), start + 3);
         if (start >= end) return;
+        final List<String> paths = new ArrayList<>(episodePaths);
+        final List<String> names = new ArrayList<>(episodeNames);
+        final String targetBase = base, targetServer = serverId;
         prefetchThread = new Thread(() -> {
-            for (int i = start; i < end && !prefetchCancelled; i++) {
-                String pp = episodePaths.get(i);
-                String nn = episodeNames.get(i);
-                PlaybackCacheManager.Entry e = PlaybackCacheManager.get().entryFor(PlayerActivity.this, base, pp, nn);
-                if (e.finalFile.exists() && e.finalFile.length() > 0) continue;
-                PlaybackCacheTask t = new PlaybackCacheTask(PlayerActivity.this, e, true, null);
-                t.start();
-                while (!prefetchCancelled && !t.complete() && !t.failed() && !t.finished()) {
-                    try { Thread.sleep(1000L); } catch (InterruptedException ignored) { break; }
+            for (int i = start; i < end && generation == prefetchGeneration; i++) {
+                PlaybackCacheTask task = null;
+                try {
+                    String pp = paths.get(i), nn = names.get(i);
+                    FileIdentity.Info info = FileIdentity.fetch(this, targetBase, pp, targetServer);
+                    if (generation != prefetchGeneration) break;
+                    synchronized (prefetchLock) {
+                        if (generation != prefetchGeneration) break;
+                        PlaybackCacheManager.Entry e = PlaybackCacheManager.get().entryFor(this, targetBase, pp, nn, info.version);
+                        if (e.finalFile.exists() && e.finalFile.length() > 0) continue;
+                        task = new PlaybackCacheTask(this, e, true, null);
+                        prefetchTask = task;
+                        task.start();
+                    }
+                    while (generation == prefetchGeneration && !task.complete() && !task.failed() && !task.finished()) {
+                        Thread.sleep(500L);
+                    }
+                } catch (Exception ignored) {
+                    if (Thread.currentThread().isInterrupted()) break;
+                } finally {
+                    if (task != null && !task.complete()) {
+                        task.close(); PlaybackCacheManager.get().deleteEntry(task.entry());
+                    }
+                    synchronized (prefetchLock) { if (prefetchTask == task) prefetchTask = null; }
                 }
-                if (!t.complete()) t.close();
             }
         }, "QueuePrefetch");
         prefetchThread.setDaemon(true);
@@ -994,19 +1075,18 @@ public class PlayerActivity extends AppCompatActivity {
     private void handleEnd(int generation) {
         if (!beginTerminalHandling(generation)) return;
         PlayerDiagnostics.log(this, "end", "gen=" + generation + " source=" + sourceMode + " t=" + currentMs + "/" + duration);
-        if (sourceMode == SourceMode.LOCAL_FILE) {
+        if (sourceMode == SourceMode.LOCAL_FILE && local) {
             completedCurrent = true;
-            Store.clearPos(this, path);
+            Store.clearPos(this, historyKey);
             setPlaybackPhase(PlaybackPhase.STOPPING);
             finishFade();
             return;
         }
         // Настоящий конец — только если досмотрели почти до конца.
         // Иначе это обрыв сети — libVLC часто шлёт EndReached вместо ошибки.
-        if (duration > 0 && currentMs > 0 && currentMs >= duration - 8000) {
+        if (sourceMode == SourceMode.LOCAL_FILE || (duration > 0 && currentMs > 0 && currentMs >= duration - 8000)) {
             completedCurrent = true;
-            Store.clearPos(this, path);
-            Store.markWatched(this, path);
+            Store.clearPos(this, historyKey);
             setPlaybackPhase(PlaybackPhase.STOPPING);
             showNextDialog();
         } else {
@@ -1681,7 +1761,7 @@ public class PlayerActivity extends AppCompatActivity {
                 && Math.abs(pos - lastSavedPosition) < POS_SAVE_INTERVAL_MS) {
             return;
         }
-        Store.setPos(this, path, pos);
+        Store.setPos(this, historyKey, pos);
         lastPosSaveAt = now;
         lastSavedPosition = pos;
     }
@@ -1707,6 +1787,7 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        updateLongJumpButton();
         if (session != null) {
             try { session.setActive(true); updatePlaybackState(); } catch (Throwable ignored) {}
         }
@@ -1714,6 +1795,14 @@ public class PlayerActivity extends AppCompatActivity {
         attachVideoViewsIfNeeded();
         ui.postDelayed(() -> { attachVideoViewsIfNeeded(); applyAspect(); }, 220L);
         PlayerDiagnostics.log(this, "lifecycle", "resume wasPlaying=" + wasPlayingBeforeStop);
+    }
+
+    private void updateLongJumpButton() {
+        if (fwd90 != null) {
+            String interval = Util.fmtTime(Store.getLongJumpSeconds(this) * 1000L);
+            fwd90.setText("+" + interval);
+            fwd90.setContentDescription("Вперёд " + interval);
+        }
     }
 
     @Override
@@ -1738,8 +1827,10 @@ public class PlayerActivity extends AppCompatActivity {
     @Override
     public void onBackPressed() {
         PlayerDiagnostics.log(this, "lifecycle", "back pos=" + currentMs + " source=" + sourceMode);
+        playbackGeneration++;
         setPlaybackPhase(PlaybackPhase.STOPPING);
         savePosition(true);
+        releaseCurrentPlayer();
         stopPrefetchWindow();
         stopPlaybackCache(false);
         super.onBackPressed();

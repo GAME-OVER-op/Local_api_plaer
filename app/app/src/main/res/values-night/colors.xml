@@ -15,4 +15,5 @@
     <color name="skeleton_shimmer">#202832</color>
     <color name="skeleton">#2A333D</color>
     <color name="scroll_thumb">#809AA7B4</color>
+    <color name="browser_accent">#9CBFFF</color>
 </resources>

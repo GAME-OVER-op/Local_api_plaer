@@ -1,11 +1,13 @@
 use hmac::{Hmac, Mac};
 use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::UdpSocket;
 use std::path::{Component, Path, PathBuf};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -548,7 +550,7 @@ fn handle(
     let ua = header_val(&request, "User-Agent");
 
     // Наши эндпоинты. Всё остальное — фасад обычного веб-сервера.
-    let is_api = matches!(path_part.as_str(), "/list" | "/search" | "/download" | "/identity");
+    let is_api = matches!(path_part.as_str(), "/list" | "/search" | "/download" | "/identity" | "/file");
 
     // Идентификатор устройства присылает только наше приложение
     // (заголовки X-Device-* или query dev/dn для потока libVLC).
@@ -605,6 +607,8 @@ fn handle(
         respond_search(request, &state.config, &search_q, &rel)
     } else if path_part == "/identity" {
         respond_identity(request, &state.config)
+    } else if path_part == "/file" {
+        respond_file(request, &state.config, &rel)
     } else {
         respond_download(request, &state.config, &rel)
     };
@@ -700,6 +704,32 @@ fn respond_identity(request: Request, config: &Config) -> u16 {
     }))
 }
 
+// A file instance, not just its name. No full video reads when browsing folders.
+fn file_version(meta: &fs::Metadata) -> String {
+    let modified = meta.modified().ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos()).unwrap_or(0);
+    #[cfg(unix)]
+    let identity = format!("{}:{}:{}:{}:{}:{}", meta.len(), modified,
+        meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec());
+    #[cfg(not(unix))]
+    let identity = format!("{}:{}", meta.len(), modified);
+    hex_encode(&Sha256::digest(identity.as_bytes()))
+}
+
+fn respond_file(request: Request, config: &Config, rel: &str) -> u16 {
+    let path = match resolve(&config.root, rel) {
+        Some(p) => p,
+        None => return respond_text(request, 400, "bad path"),
+    };
+    let meta = match fs::metadata(&path) {
+        Ok(m) if m.is_file() => m,
+        _ => return respond_text(request, 404, "not found"),
+    };
+    respond_json(request, 200, json!({ "path": rel, "size": meta.len(),
+        "version": file_version(&meta), "server_id": &config.id }))
+}
+
 fn respond_list(request: Request, config: &Config, rel: &str) -> u16 {
     let dir = match resolve(&config.root, rel) {
         Some(p) => p,
@@ -709,7 +739,7 @@ fn respond_list(request: Request, config: &Config, rel: &str) -> u16 {
         Ok(r) => r,
         Err(_) => return respond_text(request, 404, "not found"),
     };
-    let mut list: Vec<(String, bool, u64, u64, u64, bool)> = Vec::new();
+    let mut list: Vec<(String, bool, u64, u64, u64, bool, String)> = Vec::new();
     for item in read {
         if let Ok(entry) = item {
             if fs::symlink_metadata(entry.path()).map(|m| m.file_type().is_symlink()).unwrap_or(true) { continue; }
@@ -722,18 +752,20 @@ fn respond_list(request: Request, config: &Config, rel: &str) -> u16 {
             } else {
                 (0, 0, true)
             };
-            list.push((name, is_dir, size, child_count, direct_size, meta_complete));
+            let version = if is_dir { String::new() } else { file_version(&meta) };
+            list.push((name, is_dir, size, child_count, direct_size, meta_complete, version));
         }
     }
     list.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.to_lowercase().cmp(&b.0.to_lowercase())));
     let entries: Vec<Value> = list.iter()
-        .map(|(name, is_dir, size, child_count, direct_size, meta_complete)| json!({
+        .map(|(name, is_dir, size, child_count, direct_size, meta_complete, version)| json!({
             "name": name,
             "is_dir": is_dir,
             "size": size,
             "child_count": child_count,
             "direct_size": direct_size,
-            "meta_complete": meta_complete
+            "meta_complete": meta_complete,
+            "version": version
         }))
         .collect();
     respond_json(request, 200, json!({ "path": rel, "server_id": &config.id, "server_name": &config.name, "port": config.port, "entries": entries }))
@@ -771,7 +803,7 @@ fn respond_search(request: Request, config: &Config, query: &str, rel: &str) -> 
     };
     let needle = query.to_lowercase();
     let limit = 500usize;
-    let mut results: Vec<(String, bool, u64, String)> = Vec::new();
+    let mut results: Vec<(String, bool, u64, String, String)> = Vec::new();
     let mut stack: Vec<PathBuf> = vec![base];
     while let Some(current) = stack.pop() {
         if results.len() >= limit { break; }
@@ -787,16 +819,17 @@ fn respond_search(request: Request, config: &Config, query: &str, rel: &str) -> 
             if !needle.is_empty() && name.to_lowercase().contains(&needle) {
                 let relpath = full.strip_prefix(&root).unwrap_or(&full).to_string_lossy().to_string();
                 let size = if is_dir { 0 } else { meta.len() };
-                results.push((name, is_dir, size, relpath));
+                let version = if is_dir { String::new() } else { file_version(&meta) };
+                results.push((name, is_dir, size, relpath, version));
                 if results.len() >= limit { break; }
             }
         }
     }
     results.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.to_lowercase().cmp(&b.0.to_lowercase())));
     let entries: Vec<Value> = results.iter()
-        .map(|(name, is_dir, size, path)| json!({ "name": name, "is_dir": is_dir, "size": size, "path": path }))
+        .map(|(name, is_dir, size, path, version)| json!({ "name": name, "is_dir": is_dir, "size": size, "path": path, "version": version }))
         .collect();
-    respond_json(request, 200, json!({ "query": query, "count": entries.len(), "entries": entries }))
+    respond_json(request, 200, json!({ "query": query, "server_id": &config.id, "count": entries.len(), "entries": entries }))
 }
 
 fn parse_range(range: &str, total: u64) -> Option<(u64, u64)> {
@@ -828,7 +861,6 @@ fn respond_download(request: Request, config: &Config, rel: &str) -> u16 {
         Err(_) => return respond_text(request, 404, "not found"),
     };
     if !meta.is_file() { return respond_text(request, 400, "not a file"); }
-    let total = meta.len();
 
     let mut range_header: Option<String> = None;
     for h in request.headers() {
@@ -844,6 +876,22 @@ fn respond_download(request: Request, config: &Config, rel: &str) -> u16 {
         Err(_) => return respond_text(request, 404, "not found"),
     };
 
+    // Check the opened file so replacement between stat and open cannot mix versions.
+    let opened_meta = match file.metadata() {
+        Ok(m) => m,
+        Err(_) => return respond_text(request, 404, "not found"),
+    };
+    let total = opened_meta.len();
+    let version = file_version(&opened_meta);
+    let if_match = header_val(&request, "If-Match");
+    let expected = if if_match.is_empty() {
+        query_get(request.url().split_once('?').map(|(_, q)| q).unwrap_or(""), "version").unwrap_or_default()
+    } else { if_match.trim_matches('"').to_string() };
+    if !expected.is_empty() && expected != "*" && expected != version {
+        return respond_text(request, 412, "file changed; refresh the folder");
+    }
+    let etag = Header::from_bytes(&b"ETag"[..], format!("\"{}\"", version).as_bytes()).unwrap();
+
     let ct = Header::from_bytes(&b"Content-Type"[..], &b"application/octet-stream"[..]).unwrap();
     let cd = Header::from_bytes(&b"Content-Disposition"[..], disposition.as_bytes()).unwrap();
     let ar = Header::from_bytes(&b"Accept-Ranges"[..], &b"bytes"[..]).unwrap();
@@ -857,13 +905,13 @@ fn respond_download(request: Request, config: &Config, rel: &str) -> u16 {
             let reader = file.take(length);
             let cr_value = format!("bytes {}-{}/{}", start, end, total);
             let cr = Header::from_bytes(&b"Content-Range"[..], cr_value.as_bytes()).unwrap();
-            let response = Response::new(StatusCode(206), vec![ct, cd, ar, cr, server_header(), connection_close_header()], reader, usize::try_from(length).ok(), None);
+            let response = Response::new(StatusCode(206), vec![ct, cd, ar, cr, etag, server_header(), connection_close_header()], reader, usize::try_from(length).ok(), None);
             let _ = request.respond(response);
             return 206;
         }
     }
 
-    let response = Response::new(StatusCode(200), vec![ct, cd, ar, server_header(), connection_close_header()], file, usize::try_from(total).ok(), None);
+    let response = Response::new(StatusCode(200), vec![ct, cd, ar, etag, server_header(), connection_close_header()], file, usize::try_from(total).ok(), None);
     let _ = request.respond(response);
     200
 }

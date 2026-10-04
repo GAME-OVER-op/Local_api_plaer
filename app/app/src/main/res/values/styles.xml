@@ -33,4 +33,19 @@
         <item name="android:padding">10dp</item>
         <item name="android:textAllCaps">false</item>
     </style>
+    <style name="BrowserButton" parent="Widget.AppCompat.Button.Borderless">
+        <item name="android:background">@drawable/browser_button</item>
+        <item name="android:textColor">@color/browser_accent</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:padding">8dp</item>
+    </style>
+    <style name="BrowserSection">
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:paddingTop">12dp</item>
+        <item name="android:paddingBottom">8dp</item>
+    </style>
 </resources>

@@ -28,6 +28,10 @@ import android.widget.FrameLayout;
 import android.widget.GridView;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageButton;
+import android.widget.ImageView;
+import android.provider.Settings;
+import java.util.HashMap;
+import java.util.Map;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ProgressBar;
@@ -65,14 +69,20 @@ public class BrowseActivity extends AppCompatActivity {
     private boolean gridMode;
     private boolean drawerOpen;
     private boolean resumed;
+    private volatile boolean destroyed;
+    private boolean loading, everResumed;
+    private volatile int requestGeneration;
+    private final Map<String, int[]> folderScroll = new HashMap<>();
+    private String downloadStamp = "";
     private long lastLatencyMs = -1;
 
     private ListView listView, bookmarksList, recentDirs, recentVideos;
     private GridView gridView;
     private EditText searchBox;
-    private TextView empty, serverStatus, drawerTitle, infoName, infoPath, infoMeta, downloadBarText;
+    private TextView empty, serverStatus, drawerTitle, infoName, infoPath, infoMeta, downloadBarText, browserSummary;
     private Button sortBtn, viewModeBtn, bookmarksBtn, infoPlay, infoDownload, infoInstall, infoLocation, toTop;
-    private LinearLayout crumbs, skeleton, rightDrawer, bookmarksContent, infoContent;
+    private LinearLayout crumbs, skeleton, rightDrawer, bookmarksContent;
+    private View infoContent, drawerScrim;
     private HorizontalScrollView crumbScroll;
     private SwipeRefreshLayout swipe;
     private FrameLayout browserSurface;
@@ -80,7 +90,7 @@ public class BrowseActivity extends AppCompatActivity {
     private ProgressBar downloadBarProgress;
 
     private final List<Entry> entries = new ArrayList<>();
-    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ExecutorService io = Executors.newFixedThreadPool(2);
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<SkeletonRowView> skeletonRows = new ArrayList<>();
     private ValueAnimator skeletonShimmerAnimator;
@@ -101,7 +111,7 @@ public class BrowseActivity extends AppCompatActivity {
     private final Runnable hideUndo = () -> undoBar.setVisibility(View.GONE);
     private final Runnable showSkeletonDelayed = new Runnable() {
         @Override public void run() {
-            if (skeleton == null) return;
+            if (destroyed || !resumed || !loading || skeleton == null) return;
             skeleton.setVisibility(View.VISIBLE);
             animateSkeletonRows();
             startSkeletonShimmer();
@@ -120,6 +130,8 @@ public class BrowseActivity extends AppCompatActivity {
         boolean isDir;
         long size;
         String fullPath;
+        String version = "";
+        String identityKey, identityServer;
         long childCount;
         long directSize;
         boolean metaComplete = true;
@@ -173,6 +185,9 @@ public class BrowseActivity extends AppCompatActivity {
         drawerTitle = findViewById(R.id.drawer_title);
         bookmarksContent = findViewById(R.id.bookmarks_content);
         infoContent = findViewById(R.id.info_content);
+        drawerScrim = findViewById(R.id.drawer_scrim);
+        browserSummary = findViewById(R.id.browser_summary);
+        drawerScrim.setOnClickListener(v -> closeDrawer());
         bookmarksList = findViewById(R.id.bookmarks_list);
         recentDirs = findViewById(R.id.recent_dirs);
         recentVideos = findViewById(R.id.recent_videos);
@@ -251,6 +266,7 @@ public class BrowseActivity extends AppCompatActivity {
     private void setCrumbs(String p) {
         crumbs.removeAllViews();
         crumbs.addView(makeCrumb("⌂", ""));
+        crumbs.getChildAt(0).setSelected(p == null || p.isEmpty());
         if (p != null && !p.isEmpty()) {
             String[] parts = p.split("/");
             StringBuilder acc = new StringBuilder();
@@ -259,7 +275,8 @@ public class BrowseActivity extends AppCompatActivity {
                 if (acc.length() > 0) acc.append('/');
                 acc.append(part);
                 crumbs.addView(makeSep());
-                crumbs.addView(makeCrumb(part, acc.toString()));
+                TextView crumb = makeCrumb(part, acc.toString());
+                crumb.setSelected(acc.toString().equals(p)); crumbs.addView(crumb);
             }
         }
         crumbScroll.post(() -> crumbScroll.fullScroll(View.FOCUS_RIGHT));
@@ -310,36 +327,52 @@ public class BrowseActivity extends AppCompatActivity {
     }
 
     private void loadList(final String p, final int direction) {
+        rememberScroll();
         searching = false;
+        final int generation = ++requestGeneration;
         setCrumbs(p);
         showLoading(true);
         io.execute(() -> {
+            if (destroyed || generation != requestGeneration) return;
             try {
                 long requestStarted = System.currentTimeMillis();
-                JSONObject o = new JSONObject(httpGet(base + "/list?path=" + Util.enc(p)));
+                JSONObject o = new JSONObject(httpGet(base + "/list?path=" + Util.enc(p), generation));
                 final long latency = System.currentTimeMillis() - requestStarted;
-                JSONArray arr = o.getJSONArray("entries");
-                final List<Entry> loaded = parseEntries(arr, p, false);
+                final List<Entry> loaded = parseEntries(o.getJSONArray("entries"), p, false);
                 final String newServerId = o.optString("server_id", serverId);
                 final String newServerName = o.optString("server_name", serverName);
                 final int serverPort = o.optInt("port", basePort());
                 ui.post(() -> {
-                    serverId = newServerId == null ? "" : newServerId;
-                    serverName = newServerName == null ? "" : newServerName;
+                    if (destroyed || generation != requestGeneration) return;
+                    serverId = newServerId; serverName = newServerName;
                     if (!serverId.isEmpty()) UiStore.saveServer(this, serverId, serverName, baseHost(), serverPort);
-                    path = p;
-                    lastLatencyMs = latency;
+                    path = p; lastLatencyMs = latency;
                     UiStore.addRecentDir(this, serverId, base, path);
                     entries.clear(); entries.addAll(loaded);
-                    setCrumbs(path);
-                    updateServerStatus(true);
-                    resortAndShow(direction);
-                    showLoading(false);
+                    setCrumbs(path); updateServerStatus(true);
+                    resortAndShow(direction); showLoading(false);
+                    restoreScroll();
                     if (drawerOpen && bookmarksContent.getVisibility() == View.VISIBLE) renderDrawerLists();
-                    scrollToCurrentFile();
                 });
-            } catch (Exception ex) { showError(ex); }
+            } catch (Exception ex) { showError(ex, generation); }
         });
+    }
+
+    private void rememberScroll() {
+        if (loading || searching) return;
+        AbsListView view = gridMode ? gridView : listView;
+        View child = view.getChildAt(0);
+        folderScroll.put(path + ":" + gridMode, new int[]{view.getFirstVisiblePosition(), child == null ? 0 : child.getTop()});
+    }
+
+    private void restoreScroll() {
+        int[] position = folderScroll.get(path + ":" + gridMode);
+        if (position != null) {
+            if (gridMode) gridView.setSelection(position[0]);
+            else listView.setSelectionFromTop(position[0], position[1]);
+        } else {
+            if (gridMode) gridView.setSelection(0); else listView.setSelection(0);
+        }
     }
 
     private List<Entry> parseEntries(JSONArray arr, String parent, boolean searchResults) throws Exception {
@@ -347,6 +380,7 @@ public class BrowseActivity extends AppCompatActivity {
         for (int i = 0; i < arr.length(); i++) {
             JSONObject e = arr.getJSONObject(i);
             Entry en = new Entry();
+            en.version = e.optString("version", "");
             en.name = e.getString("name"); en.isDir = e.getBoolean("is_dir"); en.size = e.optLong("size", 0);
             en.fullPath = searchResults ? e.getString("path") : (parent.isEmpty() ? en.name : parent + "/" + en.name);
             en.childCount = e.optLong("child_count", -1); en.directSize = e.optLong("direct_size", 0); en.metaComplete = e.optBoolean("meta_complete", true);
@@ -356,26 +390,33 @@ public class BrowseActivity extends AppCompatActivity {
     }
 
     private void doSearch(final String q) {
+        rememberScroll();
+        final String searchPath = path;
+        final int generation = ++requestGeneration;
         lastQuery = q; searching = true; setSearchCrumb(q); showLoading(true);
         io.execute(() -> {
+            if (destroyed || generation != requestGeneration) return;
             try {
                 long requestStarted = System.currentTimeMillis();
-                JSONObject o = new JSONObject(httpGet(base + "/search?q=" + Util.enc(q) + "&path=" + Util.enc(path)));
+                JSONObject o = new JSONObject(httpGet(base + "/search?q=" + Util.enc(q) + "&path=" + Util.enc(searchPath), generation));
                 final long latency = System.currentTimeMillis() - requestStarted;
-                final List<Entry> loaded = parseEntries(o.getJSONArray("entries"), path, true);
+                final List<Entry> loaded = parseEntries(o.getJSONArray("entries"), searchPath, true);
                 ui.post(() -> {
-                    entries.clear(); entries.addAll(loaded); lastLatencyMs = latency; setSearchCrumb(q); updateServerStatus(true);
-                    resortAndShow(1); showLoading(false);
+                    if (destroyed || generation != requestGeneration) return;
+                    entries.clear(); entries.addAll(loaded); lastLatencyMs = latency;
+                    setSearchCrumb(q); updateServerStatus(true); resortAndShow(1); showLoading(false);
+                    if (gridMode) gridView.setSelection(0); else listView.setSelection(0);
                 });
-            } catch (Exception ex) { showError(ex); }
+            } catch (Exception ex) { showError(ex, generation); }
         });
     }
 
-    private void showError(final Exception ex) {
+    private void showError(final Exception ex, final int generation) {
         ui.post(() -> {
-            showLoading(false); swipe.setRefreshing(false); updateServerStatus(false);
+            if (destroyed || generation != requestGeneration) return;
+            showLoading(false); updateServerStatus(false); setCrumbs(path);
             String msg = ex.getMessage() == null ? ex.toString() : ex.getMessage();
-            if (msg != null && msg.contains("403")) msg = "Доступ отклонён сервером";
+            if (msg.contains("403")) msg = "Доступ отклонён сервером";
             Toast.makeText(this, "Ошибка: " + msg, Toast.LENGTH_LONG).show();
         });
     }
@@ -394,65 +435,56 @@ public class BrowseActivity extends AppCompatActivity {
         if (direction != 0) animateContentIn(direction);
     }
 
-    private void animateContentIn(int direction) {
-        // The list itself stays fixed. Visible rows arrive from the right in a
-        // staggered "catch-up" cascade so icon, title and subtitle never pop in.
-        final AbsListView host = gridMode ? gridView : listView;
-        host.setTranslationX(0f);
-        host.post(new Runnable() {
-            @Override public void run() { animateVisibleRows(host); }
-        });
+    private long motionDuration() {
+        try {
+            if (Settings.Global.getFloat(getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f) return 0;
+        } catch (Exception ignored) {}
+        android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+        return am != null && am.isLowRamDevice() ? 140L : 210L;
     }
 
-    private void animateVisibleRows(AbsListView host) {
-        if (entries.isEmpty()) { host.setAlpha(1f); return; }
-        final int count = host.getChildCount();
-        if (count <= 0) {
-            host.postDelayed(new Runnable() {
-                @Override public void run() { animateVisibleRows(host); }
-            }, 16);
+    private void animateContentIn(int direction) {
+        final AbsListView host = gridMode ? gridView : listView;
+        final int generation = requestGeneration;
+        host.post(() -> animateVisibleRows(host, direction, generation, 0));
+    }
+
+    private void animateVisibleRows(AbsListView host, int direction, int generation, int attempt) {
+        if (destroyed || generation != requestGeneration) return;
+        int count = host.getChildCount();
+        if (count == 0 && !entries.isEmpty() && attempt < 3) {
+            host.postDelayed(() -> animateVisibleRows(host, direction, generation, attempt + 1), 16);
             return;
         }
-        final DecelerateInterpolator ease = new DecelerateInterpolator(1.35f);
+        long duration = motionDuration();
         for (int i = 0; i < count; i++) {
-            final View row = host.getChildAt(i);
-            if (row == null) continue;
-            row.animate().cancel();
-            int stair = Math.min(dp(54), dp(18) + i * dp(5));
-            long delay = Math.min(260L, i * 28L);
-            row.setTranslationX(stair);
-            row.setAlpha(0.18f);
-            prepareRowTextForCascade(row);
-            row.animate()
-                    .translationX(0f)
-                    .alpha(1f)
-                    .setStartDelay(delay)
-                    .setDuration(270)
-                    .setInterpolator(ease)
-                    .start();
-            animateRowTextForCascade(row, delay + 45L, ease);
+            View row = host.getChildAt(i);
+            resetCascadeState(row, gridMode);
+            if (duration == 0 || i >= 10) continue;
+            row.setTranslationX(dp(direction < 0 ? -18 : 18));
+            row.setAlpha(0.35f);
+            row.animate().translationX(0f).alpha(1f).setStartDelay(Math.min(110L, i * 16L))
+                    .setDuration(duration).setInterpolator(new DecelerateInterpolator(1.4f)).start();
         }
-        // Reveal only after every visible row/text has its initial state. This
-        // prevents a single sharp frame with the new folder names.
         host.setAlpha(1f);
     }
 
-    private void prepareRowTextForCascade(View row) {
-        int nameId = gridMode ? R.id.grid_name : R.id.item_name;
-        int subId = gridMode ? R.id.grid_sub : R.id.item_sub;
-        View name = row.findViewById(nameId);
-        View sub = row.findViewById(subId);
-        if (name != null) { name.animate().cancel(); name.setAlpha(0f); name.setTranslationX(dp(10)); }
-        if (sub != null) { sub.animate().cancel(); sub.setAlpha(0f); sub.setTranslationX(dp(14)); }
-    }
-
-    private void animateRowTextForCascade(View row, long delay, DecelerateInterpolator ease) {
-        int nameId = gridMode ? R.id.grid_name : R.id.item_name;
-        int subId = gridMode ? R.id.grid_sub : R.id.item_sub;
-        View name = row.findViewById(nameId);
-        View sub = row.findViewById(subId);
-        if (name != null) name.animate().translationX(0f).alpha(1f).setStartDelay(delay).setDuration(235).setInterpolator(ease).start();
-        if (sub != null) sub.animate().translationX(0f).alpha(1f).setStartDelay(delay + 28L).setDuration(250).setInterpolator(ease).start();
+    private void animateVisibility(View view, boolean visible) {
+        Object target = view.getTag();
+        boolean oldTarget = target instanceof Boolean ? (Boolean) target : view.getVisibility() == View.VISIBLE;
+        if (visible == oldTarget) return;
+        view.setTag(visible);
+        view.animate().cancel();
+        if (visible) {
+            view.setVisibility(View.VISIBLE); view.setAlpha(0f); view.setTranslationY(dp(8));
+            view.animate().alpha(1f).translationY(0f).setStartDelay(0).setDuration(motionDuration()).start();
+        } else {
+            view.animate().alpha(0f).translationY(dp(8)).setStartDelay(0).setDuration(motionDuration())
+                    .withEndAction(() -> {
+                        if (Boolean.FALSE.equals(view.getTag())) view.setVisibility(View.GONE);
+                        view.setTranslationY(0f);
+                    }).start();
+        }
     }
 
     private void onItemClick(Entry e) {
@@ -466,18 +498,19 @@ public class BrowseActivity extends AppCompatActivity {
     }
 
     private boolean isFullyDownloaded(Entry e) {
-        if (e == null || e.isDir) return false;
-        File f = DownloadService.targetFile(base, e.fullPath, e.name);
+        if (e == null || e.isDir || e.version.isEmpty()) return false;
+        File f = DownloadService.targetFile(serverId, base, e.fullPath, e.name, e.version);
         if (!f.isFile() || f.length() <= 0) return false;
         return e.size <= 0 || f.length() >= e.size;
     }
 
     private void redownload(Entry e, boolean install) {
-        File f = DownloadService.targetFile(base, e.fullPath, e.name);
+        File f = DownloadService.targetFile(serverId, base, e.fullPath, e.name, e.version);
         if (f.exists() && !f.delete()) {
             Toast.makeText(this, "Не удалось заменить локальный файл", Toast.LENGTH_SHORT).show();
             return;
         }
+        FileIdentity.metadataFile(f).delete();
         startDownload(e, install);
     }
 
@@ -530,8 +563,8 @@ public class BrowseActivity extends AppCompatActivity {
         StringBuilder meta = new StringBuilder();
         if (e.isDir) meta.append(folderMeta(e)); else meta.append(Util.humanSize(e.size));
         if (!e.isDir && Util.isVideo(e.name)) {
-            if (Store.isWatched(this, e.fullPath)) meta.append("\nПросмотрено");
-            else { long pos = Store.getPos(this, e.fullPath); if (pos > 5000) meta.append("\nПродолжить с ").append(Util.fmtTime(pos)); }
+            if (Store.isWatched(this, entryKey(e))) meta.append("\nПросмотрено");
+            { long pos = Store.getPos(this, entryKey(e)); if (pos > 5000) meta.append("\nПродолжить с ").append(Util.fmtTime(pos)); }
         }
         DownloadService.Progress p = DownloadService.progressFor(base, e.fullPath);
         if (p != null) meta.append("\nЗагрузка: ").append(p.percent() >= 0 ? p.percent() + "%" : Util.humanSize(p.done));
@@ -555,7 +588,7 @@ public class BrowseActivity extends AppCompatActivity {
 
     private void installDownloadedApk(Entry e) {
         try {
-            File apk = DownloadService.targetFile(base, e.fullPath, e.name);
+            File apk = DownloadService.targetFile(serverId, base, e.fullPath, e.name, e.version);
             if (!apk.isFile() || apk.length() <= 0) {
                 startDownload(e, true);
                 return;
@@ -599,28 +632,42 @@ public class BrowseActivity extends AppCompatActivity {
         boolean wide = getResources().getConfiguration().screenWidthDp >= 600;
         int width = wide ? Math.min(dp(360), (int)(screen * 0.42f)) : Math.min(dp(330), (int)(screen * 0.84f));
         FrameLayout.LayoutParams dpLp = (FrameLayout.LayoutParams) rightDrawer.getLayoutParams(); dpLp.width = width; rightDrawer.setLayoutParams(dpLp);
-        if (wide) {
-            FrameLayout.LayoutParams bp = (FrameLayout.LayoutParams) browserSurface.getLayoutParams(); bp.rightMargin = width; browserSurface.setLayoutParams(bp);
-        }
-        rightDrawer.setVisibility(View.VISIBLE); rightDrawer.setTranslationX(width); rightDrawer.animate().translationX(0).setDuration(220).start();
-        drawerOpen = true; animateBookmarkButton(true);
+        FrameLayout.LayoutParams bp = (FrameLayout.LayoutParams) browserSurface.getLayoutParams();
+        bp.rightMargin = wide ? width : 0;
+        browserSurface.setLayoutParams(bp);
+        rightDrawer.animate().cancel();
+        if (!drawerOpen) rightDrawer.setTranslationX(width);
+        drawerOpen = true;
+        rightDrawer.setVisibility(View.VISIBLE);
+        rightDrawer.animate().withEndAction(null).translationX(0).setStartDelay(0).setDuration(motionDuration()).start();
+        drawerScrim.animate().cancel();
+        drawerScrim.setVisibility(wide ? View.GONE : View.VISIBLE);
+        if (!wide) { drawerScrim.setAlpha(0f); drawerScrim.animate().withEndAction(null).alpha(1f).setDuration(motionDuration()).start(); }
+        animateBookmarkButton(true);
     }
 
     private void closeDrawer() {
         if (!drawerOpen) return;
+        drawerOpen = false;
         final int width = rightDrawer.getWidth() > 0 ? rightDrawer.getWidth() : dp(320);
-        rightDrawer.animate().translationX(width).setDuration(200).withEndAction(() -> {
+        rightDrawer.animate().cancel();
+        rightDrawer.animate().translationX(width).setDuration(motionDuration()).withEndAction(() -> {
+            if (drawerOpen) return;
             rightDrawer.setVisibility(View.INVISIBLE);
             FrameLayout.LayoutParams bp = (FrameLayout.LayoutParams) browserSurface.getLayoutParams(); bp.rightMargin = 0; browserSurface.setLayoutParams(bp);
         }).start();
-        drawerOpen = false; infoEntry = null; animateBookmarkButton(false);
+        drawerScrim.animate().cancel();
+        drawerScrim.animate().alpha(0f).setDuration(motionDuration()).withEndAction(() -> {
+            if (!drawerOpen) drawerScrim.setVisibility(View.GONE);
+        }).start();
+        infoEntry = null; animateBookmarkButton(false);
     }
 
     private void animateBookmarkButton(final boolean open) {
-        bookmarksBtn.animate().scaleX(0.72f).scaleY(0.72f).setDuration(90).withEndAction(() -> {
-            bookmarksBtn.setText(open ? "★" : "☆");
-            bookmarksBtn.animate().scaleX(1f).scaleY(1f).setDuration(120).start();
-        }).start();
+        bookmarksBtn.animate().cancel();
+        bookmarksBtn.setText(open ? "★" : "☆"); bookmarksBtn.setSelected(open);
+        bookmarksBtn.setScaleX(0.9f); bookmarksBtn.setScaleY(0.9f);
+        bookmarksBtn.animate().scaleX(1f).scaleY(1f).setDuration(motionDuration()).withEndAction(null).start();
     }
 
     private void toggleQueue(Entry e) {
@@ -632,7 +679,8 @@ public class BrowseActivity extends AppCompatActivity {
 
     private void updateQueueUi() {
         if (queueBtn != null) queueBtn.setText(queueMode ? "Очередь ✓" : "Очередь");
-        if (queueBar != null) queueBar.setVisibility(queueMode ? View.VISIBLE : View.GONE);
+        if (queueBar != null) animateVisibility(queueBar, queueMode);
+        if (queueBtn != null) queueBtn.setSelected(queueMode);
         if (queueInfo != null) queueInfo.setText("В очереди: " + queuePaths.size());
     }
 
@@ -660,7 +708,8 @@ public class BrowseActivity extends AppCompatActivity {
     private void startDownload(final Entry e, boolean install) {
         final int id = DownloadService.nextId();
         Intent i = new Intent(this, DownloadService.class).setAction(DownloadService.ACTION_START)
-                .putExtra("id", id).putExtra("base", base).putExtra("path", e.fullPath).putExtra("name", e.name).putExtra("install", install);
+                .putExtra("id", id).putExtra("base", base).putExtra("path", e.fullPath).putExtra("name", e.name).putExtra("install", install)
+                .putExtra("server_id", serverId).putExtra("version", e.version);
         startService(i); showUndo(e.name, id); ui.postDelayed(this::updateDownloadUi, 120);
     }
 
@@ -681,30 +730,34 @@ public class BrowseActivity extends AppCompatActivity {
             count++; done += p.done; speed += p.bytesPerSec;
             if (p.total > 0) total += p.total; else allKnown = false;
         }
-        if (count == 0) downloadBar.setVisibility(View.GONE);
+        if (count == 0) animateVisibility(downloadBar, false);
         else {
-            downloadBar.setVisibility(View.VISIBLE);
+            animateVisibility(downloadBar, true);
             int pct = allKnown && total > 0 ? (int)Math.min(100, done * 100L / total) : -1;
             String text = "↓ " + count + " " + pluralDownloads(count);
             if (speed > 0) text += " · " + Util.humanSize(speed) + "/с";
             if (pct >= 0) text += " · " + pct + "%";
             downloadBarText.setText(text); downloadBarProgress.setIndeterminate(pct < 0); if (pct >= 0) downloadBarProgress.setProgress(pct);
         }
-        notifyAdapters();
+        String stamp = count + ":" + done + ":" + total;
+        if (!stamp.equals(downloadStamp)) { downloadStamp = stamp; notifyAdapters(); }
         if (infoEntry != null && infoContent.getVisibility() == View.VISIBLE) refreshInfoPanel();
     }
 
     private String pluralDownloads(int n) { return n == 1 ? "загрузка" : (n >= 2 && n <= 4 ? "загрузки" : "загрузок"); }
 
     private void applyViewMode(boolean animate) {
+        listView.animate().cancel(); gridView.animate().cancel();
+        listView.setAlpha(1f); gridView.setAlpha(1f);
         listView.setVisibility(gridMode ? View.GONE : View.VISIBLE); gridView.setVisibility(gridMode ? View.VISIBLE : View.GONE);
         viewModeBtn.setText(gridMode ? "☰" : "▦");
-        if (animate) { View v = gridMode ? gridView : listView; v.setAlpha(0.3f); v.animate().alpha(1f).setDuration(160).start(); }
+        viewModeBtn.setContentDescription(gridMode ? "Показать списком" : "Показать плитками");
+        if (animate) { View v = gridMode ? gridView : listView; v.setAlpha(0.3f); v.animate().alpha(1f).setDuration(motionDuration()).start(); }
         updateScrollUi(0, 0, entries.size());
     }
 
     private void updateScrollUi(int first, int visible, int total) {
-        toTop.setVisibility(first > 8 ? View.VISIBLE : View.GONE);
+        animateVisibility(toTop, first > 8);
         if (total <= visible || total <= 0) { scrollThumb.setVisibility(View.GONE); return; }
         scrollThumb.setVisibility(View.VISIBLE);
         int h = browserSurface.getHeight(); if (h <= 0) return;
@@ -716,7 +769,7 @@ public class BrowseActivity extends AppCompatActivity {
     private void buildSkeleton() {
         if (skeleton.getChildCount() > 0) return;
         skeletonRows.clear();
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 5; i++) {
             SkeletonRowView row = new SkeletonRowView(this, i);
             skeletonRows.add(row);
             skeleton.addView(row, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(62)));
@@ -724,7 +777,10 @@ public class BrowseActivity extends AppCompatActivity {
     }
 
     private void showLoading(boolean on) {
-        swipe.setRefreshing(false);
+        loading = on;
+        listView.setEnabled(!on); gridView.setEnabled(!on);
+        browserSummary.setText(on ? "Загрузка…" : (searching ? "Результаты: " : "Элементов: ") + entries.size());
+        swipe.setRefreshing(on);
         ui.removeCallbacks(showSkeletonDelayed);
         if (on) {
             // Fast LAN responses should not flash a placeholder. Only reveal the
@@ -756,13 +812,17 @@ public class BrowseActivity extends AppCompatActivity {
 
     private void startSkeletonShimmer() {
         stopSkeletonShimmer();
-        if (skeletonRows.isEmpty()) return;
+        if (skeletonRows.isEmpty() || motionDuration() == 0) return;
         skeletonShimmerAnimator = ValueAnimator.ofFloat(0f, 1f);
         skeletonShimmerAnimator.setDuration(1050L);
         skeletonShimmerAnimator.setRepeatCount(ValueAnimator.INFINITE);
         skeletonShimmerAnimator.setRepeatMode(ValueAnimator.RESTART);
         skeletonShimmerAnimator.setInterpolator(new LinearInterpolator());
+        final long[] lastFrame = {0};
         skeletonShimmerAnimator.addUpdateListener(animation -> {
+            long now = android.os.SystemClock.uptimeMillis();
+            if (now - lastFrame[0] < 33) return;
+            lastFrame[0] = now;
             float phase = (Float) animation.getAnimatedValue();
             for (SkeletonRowView row : skeletonRows) row.setShimmerPhase(phase);
         });
@@ -785,6 +845,9 @@ public class BrowseActivity extends AppCompatActivity {
         private final float density;
         private final float rowPhaseOffset;
         private float phase;
+        private LinearGradient shimmer;
+        private final android.graphics.Matrix shaderMatrix = new android.graphics.Matrix();
+        private float bandWidth;
 
         SkeletonRowView(android.content.Context context, int rowIndex) {
             super(context);
@@ -801,6 +864,14 @@ public class BrowseActivity extends AppCompatActivity {
             invalidate();
         }
 
+        @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+            super.onSizeChanged(width, height, oldWidth, oldHeight);
+            bandWidth = Math.max(dpF(58), width * 0.18f);
+            shimmer = new LinearGradient(-bandWidth, 0f, bandWidth, 0f,
+                    new int[]{baseColor, baseColor, bandColor, baseColor, baseColor},
+                    new float[]{0f, 0.30f, 0.50f, 0.70f, 1f}, Shader.TileMode.CLAMP);
+        }
+
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             float w = getWidth();
@@ -808,15 +879,12 @@ public class BrowseActivity extends AppCompatActivity {
 
             // Travel a darker band fully from left to right. The extra width keeps
             // the band outside the row at both ends, avoiding a visible jump.
-            float bandWidth = Math.max(dpF(58), w * 0.18f);
             float local = (phase + rowPhaseOffset) % 1f;
             float center = -bandWidth + local * (w + bandWidth * 2f);
-            float left = center - bandWidth;
-            float right = center + bandWidth;
-            Shader shader = new LinearGradient(left, 0f, right, 0f,
-                    new int[]{baseColor, baseColor, bandColor, baseColor, baseColor},
-                    new float[]{0f, 0.30f, 0.50f, 0.70f, 1f}, Shader.TileMode.CLAMP);
-            paint.setShader(shader);
+            if (shimmer == null) return;
+            shaderMatrix.setTranslate(center, 0f);
+            shimmer.setLocalMatrix(shaderMatrix);
+            paint.setShader(shimmer);
 
             float top = dpF(10);
             float icon = dpF(42);
@@ -871,7 +939,7 @@ public class BrowseActivity extends AppCompatActivity {
         if (e.isDir) return folderMeta(e);
         StringBuilder sb = new StringBuilder(Util.humanSize(e.size));
         boolean video = Util.isVideo(e.name);
-        if (video && !Store.isWatched(this, e.fullPath)) { long p = Store.getPos(this, e.fullPath); if (p > 5000) sb.append(" · ").append(Util.fmtTime(p)); }
+        if (video) { long p = Store.getPos(this, entryKey(e)); if (p > 5000) sb.append(" · ").append(Util.fmtTime(p)); }
         DownloadService.Progress dp = DownloadService.progressFor(base, e.fullPath);
         if (dp != null) sb.append(" · загрузка ").append(dp.percent() >= 0 ? dp.percent() + "%" : Util.humanSize(dp.done));
         else if (isFullyDownloaded(e)) sb.append(" · локально");
@@ -879,24 +947,39 @@ public class BrowseActivity extends AppCompatActivity {
         return sb.toString();
     }
 
-    private String iconFor(Entry e) { return e.isDir ? "📁" : (Util.isVideo(e.name) ? "🎬" : (Util.isApk(e.name) ? "📦" : "📄")); }
+    public static int iconResource(String name, boolean directory) {
+        return directory ? R.drawable.ic_folder_browser : Util.isVideo(name) ? R.drawable.ic_video_browser
+                : Util.isApk(name) ? R.drawable.ic_package_browser : R.drawable.ic_file_browser;
+    }
 
     private void notifyAdapters() { if (adapter != null) adapter.notifyDataSetChanged(); if (gridAdapter != null) gridAdapter.notifyDataSetChanged(); }
+
+    private String entryKey(Entry e) {
+        if (e.identityKey == null || !serverId.equals(e.identityServer)) {
+            e.identityServer = serverId;
+            e.identityKey = FileIdentity.key(serverId, base, e.fullPath, e.version);
+        }
+        return e.identityKey;
+    }
 
     private String parentPath(String p) { if (p == null) return ""; int idx = p.lastIndexOf('/'); return idx >= 0 ? p.substring(0, idx) : ""; }
     private String baseHost() { try { return new URL(base).getHost(); } catch (Exception e) { return ""; } }
     private int basePort() { try { int p = new URL(base).getPort(); return p > 0 ? p : 10930; } catch (Exception e) { return 10930; } }
 
-    private String httpGet(String u) throws Exception {
+    private String httpGet(String u, int generation) throws Exception {
         Exception last = null;
         for (int attempt = 1; attempt <= 3; attempt++) {
+            if (destroyed || generation != requestGeneration) throw new InterruptedException("obsolete request");
             HttpURLConnection c = null; java.io.InputStream in = null;
             try {
                 c = (HttpURLConnection) new URL(u).openConnection(); App.auth(c, this); c.setUseCaches(false); c.setRequestProperty("Connection", "close");
                 c.setConnectTimeout(attempt == 1 ? 5000 : 8000); c.setReadTimeout(attempt == 1 ? 12000 : 20000);
                 int code = c.getResponseCode(); if (code != 200) throw new RuntimeException("HTTP " + code);
                 in = c.getInputStream(); java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream(); byte[] buf = new byte[8192]; int r;
-                while ((r = in.read(buf)) != -1) bo.write(buf, 0, r); return bo.toString("UTF-8");
+                while ((r = in.read(buf)) != -1) {
+                    if (destroyed || generation != requestGeneration) throw new InterruptedException("obsolete request");
+                    bo.write(buf, 0, r);
+                } return bo.toString("UTF-8");
             } catch (IOException e) {
                 last = e; try { Thread.sleep(350L * attempt); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); throw ie; }
             } finally { if (in != null) try { in.close(); } catch (Exception ignored) {} if (c != null) try { c.disconnect(); } catch (Exception ignored) {} }
@@ -914,6 +997,10 @@ public class BrowseActivity extends AppCompatActivity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if (everResumed && !loading) { if (searching) doSearch(lastQuery); else loadList(path, 0); }
+        everResumed = true;
+        notifyAdapters();
+        if (infoEntry != null) refreshInfoPanel();
         ui.removeCallbacks(downloadTicker);
         ui.post(downloadTicker);
         ui.postDelayed(this::scrollToCurrentFile, 180);
@@ -921,11 +1008,17 @@ public class BrowseActivity extends AppCompatActivity {
     }
     @Override protected void onPause() {
         resumed = false;
+        ui.removeCallbacks(showSkeletonDelayed);
         ui.removeCallbacks(downloadTicker);
         stopSkeletonShimmer();
         super.onPause();
     }
+    @Override public void onConfigurationChanged(android.content.res.Configuration config) {
+        super.onConfigurationChanged(config);
+        if (drawerOpen) showDrawerInternal(false);
+    }
     @Override protected void onDestroy() {
+        destroyed = true; requestGeneration++;
         resumed = false;
         stopSkeletonShimmer();
         ui.removeCallbacksAndMessages(null);
@@ -935,6 +1028,7 @@ public class BrowseActivity extends AppCompatActivity {
 
     private void resetCascadeState(View row, boolean grid) {
         row.animate().cancel();
+        row.animate().setStartDelay(0).withEndAction(null);
         row.setTranslationX(0f);
         row.setAlpha(1f);
         View name = row.findViewById(grid ? R.id.grid_name : R.id.item_name);
@@ -951,10 +1045,11 @@ public class BrowseActivity extends AppCompatActivity {
             if (convert == null) convert = LayoutInflater.from(BrowseActivity.this).inflate(R.layout.list_item, parent, false);
             resetCascadeState(convert, false);
             Entry e = entries.get(pos);
-            TextView icon = convert.findViewById(R.id.item_icon), name = convert.findViewById(R.id.item_name), sub = convert.findViewById(R.id.item_sub), check = convert.findViewById(R.id.item_check), queueNum = convert.findViewById(R.id.item_queue);
+            ImageView icon = convert.findViewById(R.id.item_icon);
+            TextView name = convert.findViewById(R.id.item_name), sub = convert.findViewById(R.id.item_sub), check = convert.findViewById(R.id.item_check), queueNum = convert.findViewById(R.id.item_queue);
             ProgressBar progress = convert.findViewById(R.id.item_progress); View accent = convert.findViewById(R.id.item_accent);
-            icon.setText(iconFor(e)); name.setText(e.name); sub.setText(entrySub(e));
-            boolean video = !e.isDir && Util.isVideo(e.name); check.setVisibility(video && Store.isWatched(BrowseActivity.this, e.fullPath) ? View.VISIBLE : View.GONE);
+            icon.setImageResource(iconResource(e.name, e.isDir)); name.setText(e.name); sub.setText(entrySub(e));
+            boolean video = !e.isDir && Util.isVideo(e.name); check.setVisibility(video && Store.isWatched(BrowseActivity.this, entryKey(e)) ? View.VISIBLE : View.GONE);
             DownloadService.Progress dp = DownloadService.progressFor(base, e.fullPath);
             if (dp != null) { progress.setVisibility(View.VISIBLE); int pct = dp.percent(); progress.setIndeterminate(pct < 0); if (pct >= 0) progress.setProgress(pct); } else progress.setVisibility(View.GONE);
             String current = UiStore.lastPlayed(BrowseActivity.this, serverId, base); accent.setVisibility(video && e.fullPath.equals(current) ? View.VISIBLE : View.GONE);
@@ -970,9 +1065,16 @@ public class BrowseActivity extends AppCompatActivity {
         @Override public View getView(int pos, View convert, ViewGroup parent) {
             if (convert == null) convert = LayoutInflater.from(BrowseActivity.this).inflate(R.layout.grid_item, parent, false);
             resetCascadeState(convert, true);
-            Entry e = entries.get(pos); TextView icon = convert.findViewById(R.id.grid_icon), name = convert.findViewById(R.id.grid_name), sub = convert.findViewById(R.id.grid_sub);
-            icon.setText(iconFor(e)); name.setText(e.name);
-            String s = e.isDir ? folderMeta(e) : Util.humanSize(e.size);
+            Entry e = entries.get(pos); ImageView icon = convert.findViewById(R.id.grid_icon); TextView name = convert.findViewById(R.id.grid_name), sub = convert.findViewById(R.id.grid_sub);
+            icon.setImageResource(iconResource(e.name, e.isDir)); name.setText(e.name);
+            String s = e.isDir ? folderMeta(e) : entrySub(e);
+            boolean video = !e.isDir && Util.isVideo(e.name);
+            convert.findViewById(R.id.grid_check).setVisibility(video && Store.isWatched(BrowseActivity.this, entryKey(e)) ? View.VISIBLE : View.GONE);
+            convert.findViewById(R.id.grid_accent).setVisibility(video && e.fullPath.equals(UiStore.lastPlayed(BrowseActivity.this, serverId, base)) ? View.VISIBLE : View.GONE);
+            TextView queue = convert.findViewById(R.id.grid_queue);
+            int queueIndex = queuePaths.indexOf(e.fullPath);
+            queue.setVisibility(queueMode && video && queueIndex >= 0 ? View.VISIBLE : View.GONE);
+            queue.setText(String.valueOf(queueIndex + 1));
             DownloadService.Progress p = DownloadService.progressFor(base, e.fullPath); if (p != null && p.percent() >= 0) s = "Загрузка " + p.percent() + "%";
             if (queueMode && !e.isDir && Util.isVideo(e.name)) { int q = queuePaths.indexOf(e.fullPath); if (q >= 0) s = "Очередь " + (q + 1); }
             sub.setText(s); return convert;

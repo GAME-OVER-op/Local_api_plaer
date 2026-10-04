@@ -8,6 +8,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
 import android.widget.ListView;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -26,6 +27,10 @@ public class DownloadsActivity extends AppCompatActivity {
     private ListView list;
     private TextView empty;
     private Adapter adapter;
+    private final java.util.Map<String, String> fileKeys = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ExecutorService identityIo = java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
+    private volatile int reloadGeneration;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -50,6 +55,8 @@ public class DownloadsActivity extends AppCompatActivity {
     }
 
     private void reload() {
+        final int generation = ++reloadGeneration;
+        fileKeys.clear();
         files.clear();
         File dir = DownloadService.downloadsDir();
         collectFiles(dir);
@@ -63,6 +70,19 @@ public class DownloadsActivity extends AppCompatActivity {
         }
         adapter.notifyDataSetChanged();
         empty.setVisibility(files.isEmpty() ? View.VISIBLE : View.GONE);
+        final List<File> currentFiles = new ArrayList<>(files);
+        identityIo.execute(() -> {
+            for (File video : currentFiles) {
+                if (generation != reloadGeneration) break;
+                if (!Util.isVideo(video.getName())) continue;
+                try {
+                    String key = FileIdentity.localKey(video);
+                    if (generation != reloadGeneration) break;
+                    fileKeys.put(video.getAbsolutePath(), key);
+                } catch (Exception ignored) {}
+            }
+            ui.post(() -> { if (generation == reloadGeneration) adapter.notifyDataSetChanged(); });
+        });
     }
 
 
@@ -70,7 +90,8 @@ public class DownloadsActivity extends AppCompatActivity {
         File[] arr = dir.listFiles();
         if (arr == null) return;
         for (File f : arr) {
-            if (f.isFile()) files.add(f);
+            if (f.isFile() && !f.getName().endsWith(".part") && !f.getName().endsWith(".meta.json")
+                    && !f.getName().endsWith(".meta.json.tmp")) files.add(f);
             else if (f.isDirectory()) collectFiles(f);
         }
     }
@@ -117,6 +138,7 @@ public class DownloadsActivity extends AppCompatActivity {
                 .setMessage("Удалить файл с устройства?")
                 .setPositiveButton("Удалить", (d, w) -> {
                     if (f.delete()) {
+                        FileIdentity.metadataFile(f).delete();
                         deleteEmptyParents(f.getParentFile());
                         Toast.makeText(this, "Удалено", Toast.LENGTH_SHORT).show();
                         reload();
@@ -155,6 +177,12 @@ public class DownloadsActivity extends AppCompatActivity {
         return "*/*";
     }
 
+    @Override protected void onDestroy() {
+        reloadGeneration++;
+        identityIo.shutdownNow(); ui.removeCallbacksAndMessages(null);
+        super.onDestroy();
+    }
+
     class Adapter extends BaseAdapter {
         @Override
         public int getCount() {
@@ -178,14 +206,18 @@ public class DownloadsActivity extends AppCompatActivity {
             }
             File f = files.get(pos);
             String nm = f.getName();
-            TextView icon = convert.findViewById(R.id.item_icon);
+            ImageView icon = convert.findViewById(R.id.item_icon);
             TextView name = convert.findViewById(R.id.item_name);
             TextView sub = convert.findViewById(R.id.item_sub);
-            convert.findViewById(R.id.item_check).setVisibility(View.GONE);
+            String key = fileKeys.get(f.getAbsolutePath());
+            convert.findViewById(R.id.item_check).setVisibility(Store.isWatched(DownloadsActivity.this, key) ? View.VISIBLE : View.GONE);
+            convert.findViewById(R.id.item_accent).setVisibility(View.GONE);
+            convert.findViewById(R.id.item_progress).setVisibility(View.GONE);
             convert.findViewById(R.id.item_queue).setVisibility(View.GONE);
-            icon.setText(Util.isVideo(nm) ? "🎬" : (Util.isApk(nm) ? "📦" : "📄"));
+            icon.setImageResource(BrowseActivity.iconResource(nm, false));
             name.setText(nm);
-            sub.setText(Util.humanSize(f.length()));
+            long position = Store.getPos(DownloadsActivity.this, key);
+            sub.setText(Util.humanSize(f.length()) + (position > 5000 ? " · " + Util.fmtTime(position) : ""));
             return convert;
         }
     }

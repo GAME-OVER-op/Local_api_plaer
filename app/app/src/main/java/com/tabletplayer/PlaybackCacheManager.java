@@ -32,6 +32,7 @@ public final class PlaybackCacheManager {
         public final String base;
         public final String path;
         public final String name;
+        public final String version;
         public final File partFile;
         public final File finalFile;
         public final long createdAt;
@@ -44,12 +45,14 @@ public final class PlaybackCacheManager {
         public int generation = 0;
         public State state = State.PARTIAL;
         private int users = 0;
+        private boolean deleteRequested;
 
-        private Entry(String key, String base, String path, String name, File partFile, File finalFile) {
+        private Entry(String key, String base, String path, String name, String version, File partFile, File finalFile) {
             this.key = key;
             this.base = base;
             this.path = path;
             this.name = name;
+            this.version = version;
             this.partFile = partFile;
             this.finalFile = finalFile;
             this.createdAt = System.currentTimeMillis();
@@ -64,6 +67,19 @@ public final class PlaybackCacheManager {
         public synchronized void release() {
             if (users > 0) users--;
             lastUsedAt = System.currentTimeMillis();
+            if (users == 0 && deleteRequested) deleteFiles();
+        }
+
+        private synchronized void retire() {
+            deleteRequested = true;
+            state = State.RELEASED;
+            if (users == 0) deleteFiles();
+        }
+
+        private void deleteFiles() {
+            deleteQuietly(partFile); deleteQuietly(finalFile);
+            File dir = partFile.getParentFile();
+            if (dir != null) dir.delete();
         }
 
         public synchronized boolean inUse() {
@@ -81,19 +97,20 @@ public final class PlaybackCacheManager {
         return INSTANCE;
     }
 
-    public synchronized Entry entryFor(Context ctx, String base, String path, String name) {
-        String key = key(base, path);
+    public synchronized Entry entryFor(Context ctx, String base, String path, String name, String version) {
+        String key = key(base, path) + "-" + version;
         Entry e = entries.get(key);
         if (e != null) {
             e.lastUsedAt = System.currentTimeMillis();
             return e;
         }
-        File dir = new File(cacheRoot(ctx), key);
+        // A cancelled writer can finish asynchronously; never reuse its directory.
+        File dir = new File(cacheRoot(ctx), key + "-" + java.util.UUID.randomUUID().toString());
         if (!dir.exists()) dir.mkdirs();
         String safe = safeName(name == null || name.length() == 0 ? "video" : name);
         File part = new File(dir, safe + ".part");
         File fin = new File(dir, safe);
-        e = new Entry(key, base, path, name, part, fin);
+        e = new Entry(key, base, path, name, version, part, fin);
         entries.put(key, e);
         return e;
     }
@@ -135,7 +152,9 @@ public final class PlaybackCacheManager {
         if (dirs == null) return;
         for (File d : dirs) {
             if (!d.isDirectory()) continue;
-            if (entries.containsKey(d.getName())) continue;
+            boolean registered = false;
+            for (Entry e : entries.values()) if (d.equals(e.partFile.getParentFile())) { registered = true; break; }
+            if (registered) continue;
             if (now - d.lastModified() < maxAgeMs) continue;
             deleteTree(d);
         }
@@ -143,25 +162,15 @@ public final class PlaybackCacheManager {
 
     public synchronized void deleteEntry(Entry entry) {
         if (entry == null) return;
-        entry.release();
-        entry.state = State.RELEASED;
-        entries.remove(entry.key);
-        deleteQuietly(entry.partFile);
-        deleteQuietly(entry.finalFile);
-        File parent = entry.partFile.getParentFile();
-        if (parent != null) parent.delete();
+        if (entries.get(entry.key) == entry) entries.remove(entry.key);
+        entry.retire();
     }
 
     public synchronized void clearAll(Context ctx) {
         for (Entry e : new ArrayList<>(entries.values())) {
-            e.state = State.RELEASED;
-            deleteQuietly(e.partFile);
-            deleteQuietly(e.finalFile);
-            File parent = e.partFile.getParentFile();
-            if (parent != null) parent.delete();
+            e.retire();
         }
         entries.clear();
-        deleteTree(cacheRoot(ctx));
         cacheRoot(ctx);
     }
 

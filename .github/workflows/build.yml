@@ -47,6 +47,9 @@ jobs:
       - name: Build (host)
         working-directory: server
         run: cargo build --release
+      - name: File version and download regression tests
+        working-directory: server
+        run: python3 tests/api_regression.py ./target/release/media-server
       - name: Masking headers self-test
         working-directory: server
         run: |

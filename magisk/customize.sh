@@ -5,7 +5,7 @@ ui_print "- Установка без монтирования в /system"
 LIVE=/data/adb/modules/api_plaer
 
 # сохраняем существующие настройки и список разрешённых при обновлении
-for f in config.env allowed.json; do
+for f in config.env allowed.json server_id; do
   if [ -f "$LIVE/$f" ]; then
     cp -f "$LIVE/$f" "$MODPATH/$f"
   fi

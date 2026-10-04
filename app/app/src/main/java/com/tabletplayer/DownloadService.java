@@ -87,15 +87,9 @@ public class DownloadService extends Service {
         return dir;
     }
 
-    public static File targetFile(String base, String path, String name) {
-        File dir = new File(downloadsDir(), shortHash((base == null ? "" : base) + "|" + (path == null ? "" : path)));
-        if (!dir.exists()) dir.mkdirs();
+    public static File targetFile(String serverId, String base, String path, String name, String version) {
+        File dir = new File(downloadsDir(), shortHash(FileIdentity.key(serverId, base, path, version)));
         return new File(dir, safeName(name));
-    }
-
-    public static boolean isDownloaded(String base, String path, String name) {
-        File f = targetFile(base, path, name);
-        return f.isFile() && f.length() > 0;
     }
 
     private static String safeName(String name) {
@@ -148,6 +142,8 @@ public class DownloadService extends Service {
             final String path = intent.getStringExtra("path");
             final String name = intent.getStringExtra("name");
             final boolean install = intent.getBooleanExtra("install", false);
+            final String serverId = intent.getStringExtra("server_id");
+            final String version = intent.getStringExtra("version");
             Progress initial = new Progress();
             initial.id = id; initial.base = base == null ? "" : base; initial.path = path == null ? "" : path; initial.name = name == null ? "" : name; initial.preparing = true;
             PROGRESS.put(id, initial);
@@ -162,7 +158,7 @@ public class DownloadService extends Service {
             io.execute(new Runnable() {
                 @Override
                 public void run() {
-                    download(id, base, path, name, install);
+                    download(id, base, path, name, install, serverId, version);
                 }
             });
         }
@@ -183,109 +179,103 @@ public class DownloadService extends Service {
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Отмена", pi);
     }
 
-    private void download(int id, String base, String path, String name, boolean install) {
+    private void download(int id, String base, String path, String name, boolean install, String serverId, String expectedVersion) {
         NotificationManagerCompat nm = NotificationManagerCompat.from(this);
         NotificationCompat.Builder nb = builder(id, name);
-        boolean cancelled = false;
-        File out = null;
+        File part = null, out = null;
+        HttpURLConnection c = null;
+        InputStream in = null;
+        FileOutputStream fos = null;
         TransferCoordinator.Lease lease = null;
+        boolean cancelled = false;
+        Exception failure = null;
         try {
+            if (Boolean.TRUE.equals(CANCELLED.get(id))) throw new InterruptedException("cancelled");
+            FileIdentity.Info info = FileIdentity.fetch(this, base, path, serverId);
+            if (expectedVersion != null && !expectedVersion.isEmpty() && !expectedVersion.equals(info.version))
+                throw new java.io.IOException("Файл изменился. Обновите папку и повторите загрузку");
             lease = TransferCoordinator.get().acquire(TransferCoordinator.Priority.MANUAL_DOWNLOAD, name);
-            out = targetFile(base, path, name);
-            File dir = out.getParentFile();
-            if (dir != null && !dir.exists()) dir.mkdirs();
-            long existing = out.exists() ? out.length() : 0;
-
-            HttpURLConnection c = (HttpURLConnection) new URL(base + "/download?path=" + Util.enc(path)).openConnection();
-            App.auth(c, this);
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(40000);
-            if (existing > 0) c.setRequestProperty("Range", "bytes=" + existing + "-");
-            int code = c.getResponseCode();
-
-            boolean append;
-            long total;
-            if (code == 206) {
-                append = true;
-                total = existing + contentLen(c);
-            } else if (code == 200) {
-                append = false;
-                existing = 0;
-                total = contentLen(c);
-            } else {
-                throw new RuntimeException("HTTP " + code);
-            }
-
-            InputStream in = c.getInputStream();
-            FileOutputStream fos = new FileOutputStream(out, append);
-            byte[] buf = new byte[65536];
-            long done = existing;
-            Progress progress = PROGRESS.get(id);
-            if (progress != null) { progress.done = done; progress.total = total; progress.preparing = false; }
-            int r;
-            int lastPct = -1;
-            long lastNotif = 0;
-            long speedBytes = done;
-            long speedAt = System.currentTimeMillis();
-            while ((r = in.read(buf)) != -1) {
-                if (Boolean.TRUE.equals(CANCELLED.remove(id))) {
-                    cancelled = true;
-                    break;
+            if (Boolean.TRUE.equals(CANCELLED.get(id))) throw new InterruptedException("cancelled");
+            out = targetFile(info.serverId, base, path, name, info.version);
+            File parent = out.getParentFile();
+            if (parent != null && !parent.isDirectory() && !parent.mkdirs())
+                throw new java.io.IOException("Не удалось создать папку загрузки");
+            part = new File(out.getPath() + ".part");
+            long existing = part.isFile() ? part.length() : 0;
+            if (existing > info.size) { part.delete(); existing = 0; }
+            if (existing < info.size || !part.isFile()) {
+                c = (HttpURLConnection) new URL(base + "/download?path=" + Util.enc(path)).openConnection();
+                App.auth(c, this);
+                c.setRequestProperty("If-Match", "\"" + info.version + "\"");
+                c.setConnectTimeout(8000); c.setReadTimeout(40000);
+                if (existing > 0) c.setRequestProperty("Range", "bytes=" + existing + "-");
+                int code = c.getResponseCode();
+                if (code == 412) throw new java.io.IOException("Файл изменился во время загрузки");
+                if (code == 200) existing = 0;
+                else if (code != 206) throw new java.io.IOException("HTTP " + code);
+                if (code == 206) {
+                    String range = c.getHeaderField("Content-Range");
+                    if (range == null || !range.startsWith("bytes " + existing + "-") || !range.endsWith("/" + info.size))
+                        throw new java.io.IOException("Неверный диапазон докачки");
                 }
-                fos.write(buf, 0, r);
-                done += r;
-                long now = System.currentTimeMillis();
-                if (progress != null) {
-                    progress.done = done; progress.total = total;
-                    long dt = now - speedAt;
-                    if (dt >= 500) {
-                        progress.bytesPerSec = Math.max(0, (done - speedBytes) * 1000L / dt);
-                        speedBytes = done; speedAt = now;
+                in = c.getInputStream();
+                fos = new FileOutputStream(part, existing > 0);
+                byte[] buffer = new byte[65536];
+                long done = existing, lastNotification = 0, speedBytes = done, speedAt = System.currentTimeMillis();
+                Progress progress = PROGRESS.get(id);
+                if (progress != null) { progress.done = done; progress.total = info.size; progress.preparing = false; }
+                int n;
+                while ((n = in.read(buffer)) != -1) {
+                    if (Boolean.TRUE.equals(CANCELLED.get(id)) || Thread.currentThread().isInterrupted())
+                        throw new InterruptedException("cancelled");
+                    if (done + n > info.size) throw new java.io.IOException("Размер ответа больше размера файла");
+                    fos.write(buffer, 0, n); done += n;
+                    long now = System.currentTimeMillis();
+                    if (progress != null) {
+                        progress.done = done;
+                        if (now - speedAt >= 500) {
+                            progress.bytesPerSec = Math.max(0, (done - speedBytes) * 1000L / (now - speedAt));
+                            speedBytes = done; speedAt = now;
+                        }
+                    }
+                    if (now - lastNotification > 500) {
+                        int percent = info.size > 0 ? (int) (done * 100L / info.size) : 100;
+                        nb.setProgress(100, percent, false).setContentText(percent + "% · " + Util.humanSize(done));
+                        nm.notify(id, nb.build()); lastNotification = now;
                     }
                 }
-                if (total > 0) {
-                    int pct = (int) (done * 100 / total);
-                    if (pct != lastPct && now - lastNotif > 300) {
-                        lastPct = pct;
-                        lastNotif = now;
-                        nb.setProgress(100, pct, false).setContentText(pct + "%  ·  " + Util.humanSize(done));
-                        nm.notify(id, nb.build());
-                    }
-                } else if (now - lastNotif > 500) {
-                    lastNotif = now;
-                    nb.setProgress(0, 0, true).setContentText(Util.humanSize(done));
-                    nm.notify(id, nb.build());
-                }
+                fos.flush(); fos.close(); fos = null;
+                if (done != info.size) throw new java.io.IOException("Файл получен не полностью");
             }
-            fos.flush();
-            fos.close();
-            in.close();
-            c.disconnect();
-        } catch (Exception ex) {
-            nb.setOngoing(false).setProgress(0, 0, false).setContentText("Ошибка: " + ex.getMessage()).setAutoCancel(true);
-            nm.notify(id, nb.build());
-            PROGRESS.remove(id);
+            if (Boolean.TRUE.equals(CANCELLED.get(id))) throw new InterruptedException("cancelled");
+            // Recheck before publishing: the server file may have changed after the last read.
+            if (lease != null) { lease.close(); lease = null; }
+            FileIdentity.Info current = FileIdentity.fetch(this, base, path, info.serverId);
+            if (!info.version.equals(current.version)) throw new java.io.IOException("Файл изменился во время загрузки");
+            if (out.exists() && !out.delete()) throw new java.io.IOException("Не удалось заменить файл");
+            if (!part.renameTo(out)) throw new java.io.IOException("Не удалось завершить загрузку");
+            FileIdentity.saveDownload(out, info);
+        } catch (Exception e) {
+            cancelled = e instanceof InterruptedException || Boolean.TRUE.equals(CANCELLED.get(id));
+            if (!cancelled) failure = e;
+        } finally {
+            if (fos != null) try { fos.close(); } catch (Exception ignored) {}
+            if (in != null) try { in.close(); } catch (Exception ignored) {}
+            if (c != null) c.disconnect();
             if (lease != null) lease.close();
-            finishOne();
-            return;
+            CANCELLED.remove(id); PROGRESS.remove(id);
         }
-
-        if (lease != null) lease.close();
-
-        PROGRESS.remove(id);
         if (cancelled) {
-            nm.cancel(id);
-            if (out != null) out.delete();
-            toast("Загрузка отменена");
+            if (part != null) part.delete();
+            nm.cancel(id); toast("Загрузка отменена");
+        } else if (failure != null) {
+            nb.setOngoing(false).setProgress(0, 0, false).setContentText("Ошибка: " + failure.getMessage()).setAutoCancel(true);
+            nm.notify(id, nb.build());
         } else {
             NotificationCompat.Builder done = new NotificationCompat.Builder(this, CH)
-                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                    .setContentTitle(name)
-                    .setContentText("Готово")
-                    .setAutoCancel(true)
-                    .setPriority(NotificationCompat.PRIORITY_LOW);
-            nm.notify(id, done.build());
-            toast("Скачано: " + name);
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done).setContentTitle(name)
+                    .setContentText("Готово").setAutoCancel(true).setPriority(NotificationCompat.PRIORITY_LOW);
+            nm.notify(id, done.build()); toast("Скачано: " + name);
             if (install && out != null) installApk(out);
         }
         finishOne();
@@ -322,12 +312,20 @@ public class DownloadService extends Service {
     }
 
     private void finishOne() {
-        if (active.decrementAndGet() <= 0) {
-            if (Build.VERSION.SDK_INT >= 24) stopFgDetach();
-            else stopForeground(false);
-            fg = false;
-            stopSelf();
-        }
+        active.decrementAndGet();
+        ui.post(() -> {
+            if (active.get() <= 0) {
+                if (Build.VERSION.SDK_INT >= 24) stopFgDetach();
+                else stopForeground(false);
+                fg = false; stopSelf();
+            } else {
+                Progress next = null;
+                for (Progress progress : PROGRESS.values())
+                    if (next == null || progress.id < next.id) next = progress;
+                if (next != null) startForeground(next.id, builder(next.id, next.name)
+                        .setContentText("Загрузка…").setProgress(0, 0, true).build());
+            }
+        });
     }
 
     private void stopFgDetach() {

@@ -9,8 +9,11 @@ import java.util.HashSet;
 import java.util.Set;
 
 public class Store {
-    static final String KEY_WATCHED = "watched";
-    static final String KEY_POS = "positions";
+    // Legacy path-only entries cannot identify which version was watched.
+    static final String KEY_WATCHED = "watched_versions_v2";
+    static final String KEY_POS = "positions_versions_v2";
+    static final String KEY_LONG_JUMP = "long_jump_seconds";
+    public static final int DEFAULT_LONG_JUMP_SECONDS = 90;
     static final String KEY_VOLUME = "boost_volume";
     static final String KEY_ASPECT = "aspect_mode";
     static final String KEY_DECODER_MODE = "decoder_mode";
@@ -58,10 +61,13 @@ public class Store {
     }
 
     public static synchronized boolean isWatched(Context c, String p) {
-        return watched(c).contains(p);
+        if (p == null || p.isEmpty()) return false;
+        if (watchedCache == null) watched(c);
+        return watchedCache.contains(p);
     }
 
     public static synchronized void markWatched(Context c, String p) {
+        if (p == null || p.isEmpty()) return;
         try {
             Set<String> s = watched(c);
             if (s.add(p)) {
@@ -92,6 +98,7 @@ public class Store {
     }
 
     public static synchronized long getPos(Context c, String p) {
+        if (p == null || p.isEmpty()) return 0;
         try {
             return positions(c).optLong(p, 0);
         } catch (Exception e) {
@@ -100,6 +107,7 @@ public class Store {
     }
 
     public static synchronized void setPos(Context c, String p, long ms) {
+        if (p == null || p.isEmpty()) return;
         try {
             JSONObject o = positions(c);
             o.put(p, ms);
@@ -110,6 +118,7 @@ public class Store {
     }
 
     public static synchronized void clearPos(Context c, String p) {
+        if (p == null || p.isEmpty()) return;
         try {
             JSONObject o = positions(c);
             o.remove(p);
@@ -121,6 +130,22 @@ public class Store {
 
     public static int getVolume(Context c, int def) {
         return App.prefs(c).getInt(KEY_VOLUME, def);
+    }
+
+    public static int getLongJumpSeconds(Context c) {
+        return clampLongJump(prefsJump(c));
+    }
+
+    private static int prefsJump(Context c) {
+        return App.prefs(c).getInt(KEY_LONG_JUMP, DEFAULT_LONG_JUMP_SECONDS);
+    }
+
+    public static void setLongJumpSeconds(Context c, int value) {
+        App.prefs(c).edit().putInt(KEY_LONG_JUMP, clampLongJump(value)).apply();
+    }
+
+    public static int clampLongJump(int value) {
+        return Math.max(1, Math.min(3600, value));
     }
 
     public static void setVolume(Context c, int v) {

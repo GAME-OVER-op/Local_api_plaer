@@ -24,6 +24,7 @@ public class SettingsActivity extends AppCompatActivity {
     private EditText localCaching;
     private EditText playbackCacheThreads;
     private EditText playbackPrefetchThreads;
+    private EditText longJump;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -45,6 +46,9 @@ public class SettingsActivity extends AppCompatActivity {
             App.setDark(this, checked);
             recreate();
         });
+
+        longJump = findViewById(R.id.long_jump_seconds);
+        setupNumberField(longJump, Store.getLongJumpSeconds(this));
 
         Spinner contentLoadSpinner = findViewById(R.id.content_load_mode_spinner);
         ArrayAdapter<String> contentLoadAdapter = labelAdapter(CONTENT_LOAD_LABELS);
@@ -150,6 +154,10 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void saveCachingFields() {
+        if (longJump != null) {
+            Store.setLongJumpSeconds(this, readPlainNumber(longJump, Store.getLongJumpSeconds(this)));
+            setNumberText(longJump, Store.getLongJumpSeconds(this));
+        }
         if (networkCaching == null || fileCaching == null || localCaching == null) return;
         int network = readCaching(networkCaching, Store.getLibVlcNetworkCaching(this));
         int file = readCaching(fileCaching, Store.getLibVlcFileCaching(this));

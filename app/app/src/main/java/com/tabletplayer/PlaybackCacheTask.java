@@ -64,6 +64,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
 
     private volatile boolean cancelled;
+    private volatile boolean closedByOwner;
     private volatile boolean complete;
     private volatile boolean finished;
     private volatile boolean readyNotified;
@@ -223,7 +224,8 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     }
 
     public synchronized void start() {
-        if (thread != null) return;
+        if (thread != null || cancelled) return;
+        entry.retain();
         thread = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -240,7 +242,6 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "start path=" + entry.path + " file=" + entry.partFile.getName());
         try {
             PlaybackCacheManager.get().markState(entry, prefetch ? PlaybackCacheManager.State.PREFETCH : PlaybackCacheManager.State.PARTIAL);
-            entry.retain();
             long total = fetchTotalBytes();
             if (total <= 0) {
                 PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "no total path=" + entry.path);
@@ -273,7 +274,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         } catch (Exception e) {
             error = e;
             PlayerDiagnostics.log(context, prefetch ? "prefetch-error" : "cache-error", e);
-            if (!cancelled && listener != null) listener.onCacheError(this, e);
+            if (!closedByOwner && listener != null) listener.onCacheError(this, e);
         } finally {
             finished = true;
             disconnectAll();
@@ -293,6 +294,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             c = (HttpURLConnection) new URL(entry.base + "/download?path=" + Util.enc(entry.path)).openConnection();
             registerConnection(c);
             App.auth(c, context);
+            c.setRequestProperty("If-Match", "\"" + entry.version + "\"");
             c.setRequestProperty("Range", "bytes=0-0");
             c.setConnectTimeout(8000);
             c.setReadTimeout(12000);
@@ -382,16 +384,26 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             }
         } while (anyAlive && !cancelled && error == null);
 
+        // This is the downloader thread, never the UI. Release the entry only
+        // after every range reader and writer has stopped using its files.
+        if (cancelled || error != null) disconnectAll();
+        boolean interrupted = Thread.interrupted();
+        for (Thread worker : threads) interrupted |= joinUntilStopped(worker);
         requestWriterStop();
-        try {
-            writer.join(30000L);
-        } catch (InterruptedException e) {
-            cancelled = true;
-            Thread.currentThread().interrupt();
-        }
+        interrupted |= joinUntilStopped(writer);
+        if (interrupted) Thread.currentThread().interrupt();
 
         if (error != null) throw error;
         if (!cancelled && entry.downloadedBytes >= total) completeFile(total);
+    }
+
+    private boolean joinUntilStopped(Thread worker) {
+        boolean interrupted = false;
+        while (worker.isAlive()) {
+            try { worker.join(1000L); }
+            catch (InterruptedException e) { interrupted = true; cancelled = true; disconnectAll(); }
+        }
+        return interrupted;
     }
 
     private void runWorker(long total, int workerIndex) {
@@ -493,6 +505,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             c = (HttpURLConnection) new URL(entry.base + "/download?path=" + Util.enc(entry.path)).openConnection();
             registerConnection(c);
             App.auth(c, context);
+            c.setRequestProperty("If-Match", "\"" + entry.version + "\"");
             c.setRequestProperty("Range", "bytes=" + chunk.start + "-" + chunk.end);
             c.setConnectTimeout(10000);
             c.setReadTimeout(40000);
@@ -736,7 +749,6 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     }
 
     private void completeFile(long total) {
-        complete = true;
         PlayerDiagnostics.log(context, prefetch ? "prefetch" : "cache", "complete total=" + total + " path=" + entry.path);
         synchronized (lock) {
             entry.cachedBytes = total;
@@ -747,10 +759,16 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         }
         if (!entry.finalFile.exists()) {
             if (!entry.partFile.renameTo(entry.finalFile)) {
-                copyFile(entry.partFile, entry.finalFile);
+                if (!copyFile(entry.partFile, entry.finalFile)) {
+                    error = new java.io.IOException("Не удалось сохранить готовый кэш");
+                    entry.finalFile.delete();
+                    if (listener != null) listener.onCacheError(this, error);
+                    return;
+                }
                 entry.partFile.delete();
             }
         }
+        complete = true;
         PlaybackCacheManager.get().markState(entry, PlaybackCacheManager.State.READY);
         if (!readyNotified && listener != null && !prefetch) {
             readyNotified = true;
@@ -858,6 +876,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     @Override
     public void close() {
+        closedByOwner = true;
         cancelled = true;
         requestWriterStop();
         disconnectAll();
@@ -1005,7 +1024,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         }
     }
 
-    private static void copyFile(java.io.File src, java.io.File dst) {
+    private static boolean copyFile(java.io.File src, java.io.File dst) {
         java.io.FileInputStream in = null;
         FileOutputStream out = null;
         try {
@@ -1014,7 +1033,10 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
             byte[] buf = new byte[256 * 1024];
             int r;
             while ((r = in.read(buf)) != -1) out.write(buf, 0, r);
+            out.flush();
+            return dst.length() == src.length();
         } catch (Exception ignored) {
+            return false;
         } finally {
             if (in != null) try { in.close(); } catch (Exception ignored) {}
             if (out != null) try { out.close(); } catch (Exception ignored) {}

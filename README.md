@@ -107,3 +107,11 @@ The Android client now includes:
 - compact server connection indicator and animated bookmark button state.
 
 Trusted server identity is now independent of IP address. The server persists `server_id` in its data directory and exposes the device name/ID only to an authorized client. Discovery sends three background attempts and deduplicates replies. A previously authorized tablet can select the saved device name: the client first checks the last IP, then performs signed LAN discovery, verifies `/identity`, updates the IP, and connects automatically.
+
+## Обновление 4.2
+
+Исправлены переходы серий из кэша и завершение заранее загруженных серий. Галочка сохраняется при начале воспроизведения, независимо от позиции остановки. История различает сервер, путь и версию файла; прежние записи только по имени не переносятся в новую схему.
+
+Обновлены проводник и его лёгкие анимации для Android 4.4. В настройках появился шаг длинной перемотки (1–3600 секунд, по умолчанию 90); значение показано на кнопке плеера.
+
+Приложение 4.2 и media-server 0.5.0 нужно обновить вместе: добавлен `/file?path=...` и проверка версии при скачивании. Подробности, ограничения определения версии и проверки описаны в `UPDATE_4_2.md`.
