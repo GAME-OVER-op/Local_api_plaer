@@ -1,286 +1,240 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/bg"
-    android:fillViewport="true">
+    android:orientation="vertical"
+    android:background="@drawable/bg_main">
 
     <LinearLayout
-        android:id="@+id/settings_root"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:focusable="true"
-        android:focusableInTouchMode="true"
-        android:padding="20dp">
-
+        android:layout_height="72dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:background="@drawable/top_bar_bg"
+        android:paddingLeft="14dp"
+        android:paddingRight="18dp">
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/settings_back"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/icon_button_bg"
+            android:contentDescription="Назад"
+            android:padding="10dp"
+            app:srcCompat="@drawable/ic_back"
+            app:tint="@color/text_primary" />
         <LinearLayout
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="18dp" android:orientation="vertical"
-            android:background="@drawable/card_bg" android:padding="18dp">
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:text="Кнопка длинной перемотки" android:textSize="17sp"
-                android:textStyle="bold" android:textColor="@color/text_primary" />
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:layout_marginTop="6dp" android:text="Шаг вперёд в секундах: от 1 до 3600. По умолчанию — 90 секунд."
-                android:textColor="@color/text_secondary" android:textSize="12sp" />
-            <EditText android:id="@+id/long_jump_seconds" android:layout_width="match_parent"
-                android:layout_height="48dp" android:layout_marginTop="10dp" android:padding="12dp"
-                android:background="@drawable/edit_bg" android:inputType="number" android:maxLength="4"
-                android:imeOptions="actionDone" android:singleLine="true" android:selectAllOnFocus="true"
-                android:textColor="@color/text_primary" android:textSize="16sp" />
-        </LinearLayout>
-
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="16dp" android:layout_marginBottom="16dp"
-            android:orientation="vertical" android:background="@drawable/card_bg" android:padding="18dp">
-            <androidx.appcompat.widget.SwitchCompat android:id="@+id/smooth_video_switch"
-                android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:minHeight="48dp" android:text="@string/smooth_video_title"
-                android:textColor="@color/text_primary" android:textSize="17sp" />
-            <TextView android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:layout_marginTop="8dp" android:text="@string/smooth_video_hint"
-                android:textColor="@color/text_secondary" android:textSize="12sp" />
-        </LinearLayout>
-
-        <TextView
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Оформление"
-            android:textColor="@color/text_secondary"
-            android:textSize="14sp"
-            android:textStyle="bold" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="horizontal"
-            android:background="@drawable/card_bg"
-            android:gravity="center_vertical"
-            android:padding="18dp">
-
+            android:layout_weight="1"
+            android:layout_marginLeft="13dp"
+            android:orientation="vertical">
             <TextView
-                android:layout_width="0dp"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Темная тема"
+                android:text="Настройки"
                 android:textColor="@color/text_primary"
-                android:textSize="17sp" />
-
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/theme_switch"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content" />
-        </LinearLayout>
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="22dp"
-            android:text="Настройки libVLC"
-            android:textColor="@color/text_secondary"
-            android:textSize="14sp"
-            android:textStyle="bold" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:orientation="vertical"
-            android:background="@drawable/card_bg"
-            android:padding="18dp">
-
+                android:textSize="21sp"
+                android:textStyle="bold" />
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Режим загрузки контента"
-                android:textColor="@color/text_primary"
-                android:textSize="16sp" />
-
-            <Spinner
-                android:id="@+id/content_load_mode_spinner"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="Авто: локальный файл → локальный кэш → прямой поток при fallback"
+                android:layout_marginTop="2dp"
+                android:text="Воспроизведение, интерфейс и кэш"
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Режим декодера"
-                android:textColor="@color/text_primary"
-                android:textSize="16sp" />
-
-            <Spinner
-                android:id="@+id/decoder_spinner"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp" />
-
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/catch_up_switch"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="Догонка кадров"
-                android:textColor="@color/text_primary"
-                android:textSize="16sp" />
-
-            <androidx.appcompat.widget.SwitchCompat
-                android:id="@+id/avcodec_fast_switch"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Быстрый декодер"
-                android:textColor="@color/text_primary"
-                android:textSize="16sp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:text="Пропуск loop-фильтра"
-                android:textColor="@color/text_primary"
-                android:textSize="16sp" />
-
-            <Spinner
-                android:id="@+id/skip_loop_spinner"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="Network caching, мс"
-                android:textColor="@color/text_primary"
-                android:textSize="15sp" />
-
-            <EditText
-                android:id="@+id/network_caching"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:background="@drawable/edit_bg"
-                android:inputType="number"
-                android:imeOptions="actionDone"
-                android:maxLines="1"
-                android:singleLine="true"
-                android:selectAllOnFocus="true"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_secondary" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="File caching, мс"
-                android:textColor="@color/text_primary"
-                android:textSize="15sp" />
-
-            <EditText
-                android:id="@+id/file_caching"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:background="@drawable/edit_bg"
-                android:inputType="number"
-                android:imeOptions="actionDone"
-                android:maxLines="1"
-                android:singleLine="true"
-                android:selectAllOnFocus="true"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_secondary" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="Local cache, мс"
-                android:textColor="@color/text_primary"
-                android:textSize="15sp" />
-
-            <EditText
-                android:id="@+id/local_caching"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:background="@drawable/edit_bg"
-                android:inputType="number"
-                android:imeOptions="actionDone"
-                android:maxLines="1"
-                android:singleLine="true"
-                android:selectAllOnFocus="true"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_secondary" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="Дозагрузка: потоки текущей серии"
-                android:textColor="@color/text_primary"
-                android:textSize="15sp" />
-
-            <EditText
-                android:id="@+id/playback_cache_threads"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:background="@drawable/edit_bg"
-                android:inputType="number"
-                android:imeOptions="actionDone"
-                android:maxLines="1"
-                android:singleLine="true"
-                android:selectAllOnFocus="true"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_secondary" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="Предзагрузка: потоки очереди"
-                android:textColor="@color/text_primary"
-                android:textSize="15sp" />
-
-            <EditText
-                android:id="@+id/playback_prefetch_threads"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:background="@drawable/edit_bg"
-                android:inputType="number"
-                android:imeOptions="actionDone"
-                android:maxLines="1"
-                android:singleLine="true"
-                android:selectAllOnFocus="true"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_secondary" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="По умолчанию: 8 для текущей серии, 3 для предзагрузки. Общий лимит приложения — 12 соединений."
-                android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
-
-            <Button
-                android:id="@+id/reset_libvlc_btn"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:text="Сбросить настройки libVLC и кэша" />
         </LinearLayout>
     </LinearLayout>
-</ScrollView>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true"
+        android:clipToPadding="false">
+
+        <LinearLayout
+            android:id="@+id/settings_root"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:paddingLeft="18dp"
+            android:paddingRight="18dp"
+            android:paddingTop="18dp"
+            android:paddingBottom="30dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="4dp"
+                android:text="ВОСПРОИЗВЕДЕНИЕ"
+                style="@style/SectionLabel" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="9dp"
+                android:orientation="vertical"
+                android:background="@drawable/card_bg"
+                android:padding="18dp">
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Длинная перемотка"
+                    android:textSize="17sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/text_primary" />
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:text="Шаг вперёд в секундах: от 1 до 3600. По умолчанию — 90 секунд."
+                    style="@style/HintText" />
+                <EditText
+                    android:id="@+id/long_jump_seconds"
+                    android:layout_width="match_parent"
+                    android:layout_height="50dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/edit_bg"
+                    android:inputType="number"
+                    android:maxLength="4"
+                    android:imeOptions="actionDone"
+                    android:singleLine="true"
+                    android:selectAllOnFocus="true"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="vertical"
+                android:background="@drawable/card_bg"
+                android:padding="18dp">
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/smooth_video_switch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:text="@string/smooth_video_title"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="7dp"
+                    android:text="@string/smooth_video_hint"
+                    style="@style/HintText" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:layout_marginLeft="4dp"
+                android:text="ОФОРМЛЕНИЕ"
+                style="@style/SectionLabel" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="9dp"
+                android:orientation="horizontal"
+                android:background="@drawable/card_bg"
+                android:gravity="center_vertical"
+                android:padding="18dp">
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Тёмная тема"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="Переключает всю палитру приложения."
+                        style="@style/HintText" />
+                </LinearLayout>
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/theme_switch"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="12dp" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:layout_marginLeft="4dp"
+                android:text="ДВИЖОК И КЭШ"
+                style="@style/SectionLabel" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="9dp"
+                android:orientation="vertical"
+                android:background="@drawable/card_bg"
+                android:padding="18dp">
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Режим загрузки контента" style="@style/FieldLabel" />
+                <Spinner android:id="@+id/content_load_mode_spinner" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="7dp" android:background="@drawable/spinner_bg" android:paddingLeft="12dp" android:paddingRight="12dp" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:text="Авто: локальный файл → локальный кэш → прямой поток при fallback" style="@style/HintText" />
+
+                <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="18dp" android:layout_marginBottom="18dp" android:background="@color/divider" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Режим декодера" style="@style/FieldLabel" />
+                <Spinner android:id="@+id/decoder_spinner" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="7dp" android:background="@drawable/spinner_bg" android:paddingLeft="12dp" android:paddingRight="12dp" />
+
+                <androidx.appcompat.widget.SwitchCompat android:id="@+id/catch_up_switch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:minHeight="44dp" android:text="Догонка кадров" android:textColor="@color/text_primary" android:textSize="15sp" />
+                <androidx.appcompat.widget.SwitchCompat android:id="@+id/avcodec_fast_switch" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:minHeight="44dp" android:text="Быстрый декодер" android:textColor="@color/text_primary" android:textSize="15sp" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="Пропуск loop-фильтра" style="@style/FieldLabel" />
+                <Spinner android:id="@+id/skip_loop_spinner" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="7dp" android:background="@drawable/spinner_bg" android:paddingLeft="12dp" android:paddingRight="12dp" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="Буферизация libVLC" android:textColor="@color/text_primary" android:textSize="16sp" android:textStyle="bold" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Тонкая настройка сетевого и локального кэша в миллисекундах." style="@style/HintText" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Network caching, мс" style="@style/FieldLabel" />
+                <EditText android:id="@+id/network_caching" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="6dp" android:background="@drawable/edit_bg" android:inputType="number" android:imeOptions="actionDone" android:maxLines="1" android:singleLine="true" android:selectAllOnFocus="true" android:textColor="@color/text_primary" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="13dp" android:text="File caching, мс" style="@style/FieldLabel" />
+                <EditText android:id="@+id/file_caching" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="6dp" android:background="@drawable/edit_bg" android:inputType="number" android:imeOptions="actionDone" android:maxLines="1" android:singleLine="true" android:selectAllOnFocus="true" android:textColor="@color/text_primary" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="13dp" android:text="Local cache, мс" style="@style/FieldLabel" />
+                <EditText android:id="@+id/local_caching" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="6dp" android:background="@drawable/edit_bg" android:inputType="number" android:imeOptions="actionDone" android:maxLines="1" android:singleLine="true" android:selectAllOnFocus="true" android:textColor="@color/text_primary" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="20dp" android:text="Параллельная загрузка" android:textColor="@color/text_primary" android:textSize="16sp" android:textStyle="bold" />
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Количество соединений для текущей серии и фоновой предзагрузки." style="@style/HintText" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:text="Потоки текущей серии" style="@style/FieldLabel" />
+                <EditText android:id="@+id/playback_cache_threads" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="6dp" android:background="@drawable/edit_bg" android:inputType="number" android:imeOptions="actionDone" android:maxLines="1" android:singleLine="true" android:selectAllOnFocus="true" android:textColor="@color/text_primary" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="13dp" android:text="Потоки очереди" style="@style/FieldLabel" />
+                <EditText android:id="@+id/playback_prefetch_threads" android:layout_width="match_parent" android:layout_height="50dp" android:layout_marginTop="6dp" android:background="@drawable/edit_bg" android:inputType="number" android:imeOptions="actionDone" android:maxLines="1" android:singleLine="true" android:selectAllOnFocus="true" android:textColor="@color/text_primary" />
+
+                <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="9dp" android:text="По умолчанию: 8 для текущей серии, 3 для предзагрузки. Общий лимит приложения — 12 соединений." style="@style/HintText" />
+
+                <Button
+                    android:id="@+id/reset_libvlc_btn"
+                    style="@style/DangerButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="50dp"
+                    android:layout_marginTop="20dp"
+                    android:text="Сбросить параметры движка и кэша" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

@@ -25,7 +25,7 @@ import java.util.List;
 public class DownloadsActivity extends AppCompatActivity {
     private final List<File> files = new ArrayList<>();
     private ListView list;
-    private TextView empty;
+    private View empty;
     private Adapter adapter;
     private final java.util.Map<String, String> fileKeys = new java.util.concurrent.ConcurrentHashMap<>();
     private final java.util.concurrent.ExecutorService identityIo = java.util.concurrent.Executors.newSingleThreadExecutor();
@@ -36,9 +36,16 @@ public class DownloadsActivity extends AppCompatActivity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         setContentView(R.layout.activity_downloads);
+        UiMotion.configureWindow(this);
         setTitle("Загрузки");
         list = findViewById(R.id.dl_list);
         empty = findViewById(R.id.dl_empty);
+        View back = findViewById(R.id.downloads_back);
+        back.setOnClickListener(v -> closeScreen());
+        UiMotion.press(back);
+        View screenRoot = findViewById(R.id.downloads_root);
+        UiMotion.enter(screenRoot);
+        if (screenRoot instanceof ViewGroup) screenRoot.post(() -> UiMotion.cascade((ViewGroup) screenRoot));
         adapter = new Adapter();
         list.setAdapter(adapter);
         list.setOnItemClickListener((p, v, pos, id) -> onClick(files.get(pos)));
@@ -69,7 +76,8 @@ public class DownloadsActivity extends AppCompatActivity {
             });
         }
         adapter.notifyDataSetChanged();
-        empty.setVisibility(files.isEmpty() ? View.VISIBLE : View.GONE);
+        UiMotion.fadeVisible(empty, files.isEmpty());
+        UiMotion.animateList(list);
         final List<File> currentFiles = new ArrayList<>(files);
         identityIo.execute(() -> {
             for (File video : currentFiles) {
@@ -221,4 +229,15 @@ public class DownloadsActivity extends AppCompatActivity {
             return convert;
         }
     }
+
+    private void closeScreen() {
+        finish();
+        overridePendingTransition(R.anim.slide_in_left, R.anim.slide_out_right);
+    }
+
+    @Override
+    public void onBackPressed() {
+        closeScreen();
+    }
+
 }

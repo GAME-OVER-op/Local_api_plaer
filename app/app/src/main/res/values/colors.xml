@@ -1,19 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="primary">#1E6FE0</color>
-    <color name="primary_dark">#1552B0</color>
-    <color name="accent">#FF7043</color>
-    <color name="bg">#F4F6FA</color>
-    <color name="surface">#FFFFFF</color>
-    <color name="text_primary">#1B2733</color>
-    <color name="text_secondary">#63727F</color>
-    <color name="divider">#E1E6EC</color>
+    <color name="primary">#5B6CFF</color>
+    <color name="primary_dark">#4654D9</color>
+    <color name="primary_soft">#E9ECFF</color>
+    <color name="accent">#16B8A6</color>
+    <color name="accent_soft">#DDF7F3</color>
+    <color name="bg">#F5F7FB</color>
+    <color name="bg_top">#EEF1FF</color>
+    <color name="surface">#FFFFFFFF</color>
+    <color name="surface_alt">#F0F3F9</color>
+    <color name="surface_high">#E8ECF5</color>
+    <color name="surface_glass">#F4FFFFFF</color>
+    <color name="text_primary">#171B2C</color>
+    <color name="text_secondary">#697189</color>
+    <color name="text_tertiary">#9199AE</color>
+    <color name="divider">#E3E7F0</color>
     <color name="header_text">#FFFFFF</color>
-    <color name="list_pressed">#E3EEFF</color>
-    <color name="surface_alt">#EAF1FB</color>
-    <color name="accent_soft">#22FF7043</color>
-    <color name="skeleton_shimmer">#C4CDD8</color>
-    <color name="skeleton">#DDE3EB</color>
-    <color name="scroll_thumb">#809AA7B4</color>
-    <color name="browser_accent">#1E6FE0</color>
+    <color name="list_pressed">#E8ECFF</color>
+    <color name="skeleton_shimmer">#EEF1F7</color>
+    <color name="skeleton">#E2E6EF</color>
+    <color name="scroll_thumb">#667786A4</color>
+    <color name="browser_accent">#5669F7</color>
+    <color name="positive">#18A66A</color>
+    <color name="warning">#F2A33C</color>
+    <color name="danger">#E75A6A</color>
+    <color name="player_glass">#C71A1D27</color>
+    <color name="player_glass_strong">#E3151821</color>
+    <color name="player_border">#38FFFFFF</color>
+    <color name="scrim">#66070A12</color>
 </resources>

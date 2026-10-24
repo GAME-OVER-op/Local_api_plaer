@@ -11,6 +11,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ListView;
+import android.widget.ImageButton;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -36,7 +37,7 @@ public class MainActivity extends AppCompatActivity {
 
     private EditText ip, port;
     private ListView history, trustedList;
-    private TextView historyEmpty, trustedEmpty;
+    private TextView historyEmpty, trustedEmpty, mainStatus;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Map<String, Discovery.Server> discovered = new HashMap<>();
 
@@ -44,6 +45,7 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         setContentView(R.layout.activity_main);
+        UiMotion.configureWindow(this);
         setTitle(R.string.app_name);
 
         ip = findViewById(R.id.ip);
@@ -54,11 +56,21 @@ public class MainActivity extends AppCompatActivity {
         trustedEmpty = findViewById(R.id.trusted_empty);
         Button connect = findViewById(R.id.connect);
         Button discover = findViewById(R.id.discover);
+        ImageButton settings = findViewById(R.id.main_settings_btn);
+        mainStatus = findViewById(R.id.main_status);
 
         ip.setText(App.prefs(this).getString(KEY_IP, ""));
         port.setText(App.prefs(this).getString(KEY_PORT, "10930"));
         connect.setOnClickListener(v -> doConnect());
         discover.setOnClickListener(v -> doDiscover(discover));
+        settings.setOnClickListener(v -> {
+            startActivity(new Intent(this, SettingsActivity.class));
+            overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left);
+        });
+        UiMotion.pressAll(connect, discover, settings);
+        View mainRoot = findViewById(R.id.main_root);
+        UiMotion.enter(mainRoot);
+        if (mainRoot instanceof android.view.ViewGroup) mainRoot.post(() -> UiMotion.cascade((android.view.ViewGroup) mainRoot));
         renderTrusted();
         renderHistory();
     }
@@ -99,7 +111,8 @@ public class MainActivity extends AppCompatActivity {
         trustedList.setVisibility(records.isEmpty() ? View.GONE : View.VISIBLE);
         List<String> labels = new ArrayList<>();
         for (UiStore.ServerRecord r : records) labels.add("●  " + r.name + "\n    " + r.host + ":" + r.port);
-        trustedList.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels));
+        trustedList.setAdapter(endpointAdapter(labels, true));
+        UiMotion.animateList(trustedList);
         trustedList.setOnItemClickListener((p, v, pos, id) -> reconnectTrusted(records.get(pos)));
     }
 
@@ -181,7 +194,8 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
         historyEmpty.setVisibility(items.isEmpty() ? View.VISIBLE : View.GONE);
         history.setVisibility(items.isEmpty() ? View.GONE : View.VISIBLE);
-        history.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, items));
+        history.setAdapter(endpointAdapter(items, false));
+        UiMotion.animateList(history);
         history.setOnItemClickListener((parent, view, pos, id) -> {
             String s = items.get(pos); int idx = s.lastIndexOf(':');
             if (idx <= 0) return;
@@ -196,12 +210,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void doDiscover(final Button btn) {
-        btn.setEnabled(false); btn.setText("Поиск… (3 попытки)");
+        btn.setEnabled(false); btn.setText("Ищем устройства…");
+        if (mainStatus != null) mainStatus.setText("●  Поиск серверов в сети…");
         final int p = portValue();
         new Thread(() -> {
             final List<Discovery.Server> found = Discovery.find(this, p, 2100);
             ui.post(() -> {
-                btn.setEnabled(true); btn.setText("Найти серверы в сети"); showFound(found);
+                btn.setEnabled(true); btn.setText("Найти серверы в сети");
+                if (mainStatus != null) mainStatus.setText(found.isEmpty() ? "●  Серверы не найдены" : "●  Найдено: " + found.size());
+                showFound(found);
             });
         }, "server-discovery").start();
     }
@@ -224,6 +241,34 @@ public class MainActivity extends AppCompatActivity {
                     renderTrusted();
                 })
                 .setNegativeButton("Закрыть", null).show();
+    }
+
+    private ArrayAdapter<String> endpointAdapter(List<String> values, boolean trusted) {
+        return new ArrayAdapter<String>(this, R.layout.server_item, R.id.server_title, values) {
+            @Override public View getView(int position, View convertView, android.view.ViewGroup parent) {
+                View row = super.getView(position, convertView, parent);
+                TextView title = row.findViewById(R.id.server_title);
+                TextView subtitle = row.findViewById(R.id.server_subtitle);
+                TextView dot = row.findViewById(R.id.server_dot);
+                String raw = getItem(position);
+                if (raw == null) raw = "";
+                String first = raw;
+                String second = "";
+                int newline = raw.indexOf('\n');
+                if (newline >= 0) {
+                    first = raw.substring(0, newline).replace("●  ", "").trim();
+                    second = raw.substring(newline + 1).trim();
+                } else if (!trusted) {
+                    first = "Недавнее подключение";
+                    second = raw.trim();
+                }
+                title.setText(first);
+                subtitle.setText(second);
+                dot.setText(trusted ? "●" : "↻");
+                dot.setTextColor(getResources().getColor(trusted ? R.color.positive : R.color.primary));
+                return row;
+            }
+        };
     }
 
     @Override public boolean onCreateOptionsMenu(Menu menu) { getMenuInflater().inflate(R.menu.main_menu, menu); return true; }

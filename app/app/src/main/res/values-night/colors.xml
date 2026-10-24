@@ -1,19 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="primary">#1E6FE0</color>
-    <color name="primary_dark">#1552B0</color>
-    <color name="accent">#FF7043</color>
-    <color name="bg">#10141A</color>
-    <color name="surface">#1B222B</color>
-    <color name="text_primary">#ECF1F7</color>
-    <color name="text_secondary">#9AA7B4</color>
-    <color name="divider">#2A333D</color>
+    <color name="primary">#94A3FF</color>
+    <color name="primary_dark">#7182F5</color>
+    <color name="primary_soft">#252C55</color>
+    <color name="accent">#45D6C4</color>
+    <color name="accent_soft">#173B39</color>
+    <color name="bg">#0C1018</color>
+    <color name="bg_top">#11172A</color>
+    <color name="surface">#151B25</color>
+    <color name="surface_alt">#1C2431</color>
+    <color name="surface_high">#252F3E</color>
+    <color name="surface_glass">#F21A202B</color>
+    <color name="text_primary">#F3F5FA</color>
+    <color name="text_secondary">#AAB2C3</color>
+    <color name="text_tertiary">#7F899D</color>
+    <color name="divider">#293241</color>
     <color name="header_text">#FFFFFF</color>
-    <color name="list_pressed">#22303F</color>
-    <color name="surface_alt">#242E39</color>
-    <color name="accent_soft">#33FF7043</color>
-    <color name="skeleton_shimmer">#202832</color>
-    <color name="skeleton">#2A333D</color>
-    <color name="scroll_thumb">#809AA7B4</color>
-    <color name="browser_accent">#9CBFFF</color>
+    <color name="list_pressed">#2A3550</color>
+    <color name="skeleton_shimmer">#202938</color>
+    <color name="skeleton">#293343</color>
+    <color name="scroll_thumb">#8096A2B8</color>
+    <color name="browser_accent">#A5B2FF</color>
+    <color name="positive">#54D89B</color>
+    <color name="warning">#F8BD67</color>
+    <color name="danger">#FF8090</color>
+    <color name="player_glass">#C712151E</color>
+    <color name="player_glass_strong">#EA0D1017</color>
+    <color name="player_border">#32FFFFFF</color>
+    <color name="scrim">#99000000</color>
 </resources>

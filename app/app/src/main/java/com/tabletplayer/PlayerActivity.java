@@ -281,6 +281,7 @@ public class PlayerActivity extends AppCompatActivity {
         speed = findViewById(R.id.speed);
         aspect = findViewById(R.id.aspect);
         fullscreen = findViewById(R.id.fullscreen);
+        UiMotion.pressAll(prev, rew, playPause, fwd, fwd90, next, speed, aspect, fullscreen, retryBtn);
 
         videoLayout.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
             int w = right - left;
@@ -1841,29 +1842,29 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void flashInfo(String text) {
         gestureInfo.setText(text);
-        gestureInfo.setVisibility(View.VISIBLE);
+        UiMotion.fadeVisible(gestureInfo, true);
         ui.removeCallbacks(hideInfo);
         ui.postDelayed(hideInfo, 900);
     }
 
     private void flashInfoSticky(String text) {
         gestureInfo.setText(text);
-        gestureInfo.setVisibility(View.VISIBLE);
+        UiMotion.fadeVisible(gestureInfo, true);
         ui.removeCallbacks(hideInfo);
     }
 
-    private final Runnable hideInfo = () -> gestureInfo.setVisibility(View.GONE);
+    private final Runnable hideInfo = () -> UiMotion.fadeVisible(gestureInfo, false);
 
     private void showBuffering(String text) {
         if (text == null) text = "";
         CharSequence old = bufferingText.getText();
         if (old == null || !text.contentEquals(old)) bufferingText.setText(text);
         retryBtn.setVisibility(View.GONE);
-        if (buffering.getVisibility() != View.VISIBLE) buffering.setVisibility(View.VISIBLE);
+        UiMotion.fadeVisible(buffering, true);
     }
 
     private void hideBuffering() {
-        buffering.setVisibility(View.GONE);
+        UiMotion.fadeVisible(buffering, false);
         retryBtn.setVisibility(View.GONE);
     }
 
@@ -1935,20 +1936,55 @@ public class PlayerActivity extends AppCompatActivity {
     }
 
     private void setControlsVisible(boolean visible) {
+        boolean controlsMatch = controls == null || visible == (controls.getVisibility() == View.VISIBLE);
+        boolean headerMatch = playerHeader == null || visible == (playerHeader.getVisibility() == View.VISIBLE);
+        if (controlsVisible == visible && controlsMatch && headerMatch) {
+            ui.removeCallbacks(hideRunnable);
+            if (visible) ui.postDelayed(hideRunnable, AUTO_HIDE_MS);
+            return;
+        }
         controlsVisible = visible;
-        if (playerHeader != null) playerHeader.setVisibility(visible ? View.VISIBLE : View.GONE);
-        if (controls != null) controls.setVisibility(visible ? View.VISIBLE : View.GONE);
-        if (titleBar != null) titleBar.setVisibility(visible ? View.VISIBLE : View.GONE);
+        animatePlayerChrome(playerHeader, visible, -18f);
+        animatePlayerChrome(controls, visible, 22f);
+        if (titleBar != null && visible) titleBar.setVisibility(View.VISIBLE);
         if (technicalCard != null) {
-            if (visible) updateTechnicalCard(true);
-            else technicalCard.setVisibility(View.GONE);
+            if (visible) {
+                updateTechnicalCard(true);
+                technicalCard.setAlpha(0f);
+                technicalCard.setTranslationX(-10f * getResources().getDisplayMetrics().density);
+                technicalCard.animate().alpha(1f).translationX(0f).setDuration(220L)
+                        .setInterpolator(new android.view.animation.DecelerateInterpolator(1.7f)).start();
+            } else {
+                technicalCard.animate().cancel();
+                technicalCard.setVisibility(View.GONE);
+            }
         }
 
         ui.removeCallbacks(hideRunnable);
-        if (visible) {
-            ui.postDelayed(hideRunnable, AUTO_HIDE_MS);
-        }
+        if (visible) ui.postDelayed(hideRunnable, AUTO_HIDE_MS);
         scheduleImmersiveReapply();
+    }
+
+    private void animatePlayerChrome(View view, boolean visible, float hiddenDp) {
+        if (view == null) return;
+        float hidden = hiddenDp * getResources().getDisplayMetrics().density;
+        view.animate().cancel();
+        if (visible) {
+            view.setVisibility(View.VISIBLE);
+            view.setAlpha(0f);
+            view.setTranslationY(hidden);
+            view.animate().alpha(1f).translationY(0f).setDuration(230L)
+                    .setInterpolator(new android.view.animation.DecelerateInterpolator(1.8f)).start();
+        } else if (view.getVisibility() == View.VISIBLE) {
+            view.animate().alpha(0f).translationY(hidden).setDuration(170L)
+                    .withEndAction(() -> {
+                        if (!controlsVisible) {
+                            view.setVisibility(View.GONE);
+                            view.setAlpha(1f);
+                            view.setTranslationY(0f);
+                        }
+                    }).start();
+        }
     }
 
     private void toggleImmersive() {

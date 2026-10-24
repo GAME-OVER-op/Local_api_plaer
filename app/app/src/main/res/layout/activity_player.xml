@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/player_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/black">
@@ -26,10 +27,13 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
-        android:background="#B3000000"
+        android:background="@drawable/player_header_bg"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:padding="12dp"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:paddingTop="14dp"
+        android:paddingBottom="24dp"
         android:visibility="gone">
         <TextView
             android:id="@+id/title_bar"
@@ -46,30 +50,30 @@
             android:id="@+id/battery_badge"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginRight="6dp"
+            android:layout_marginRight="7dp"
             android:background="@drawable/overlay_bg"
-            android:paddingLeft="8dp"
-            android:paddingRight="8dp"
-            android:paddingTop="5dp"
-            android:paddingBottom="5dp"
+            android:paddingLeft="10dp"
+            android:paddingRight="10dp"
+            android:paddingTop="7dp"
+            android:paddingBottom="7dp"
             android:drawablePadding="5dp"
             app:drawableLeftCompat="@drawable/ic_headphones"
             android:text="—%"
             android:textColor="#FFFFFF"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:visibility="gone" />
         <TextView
             android:id="@+id/cache_badge"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:background="@drawable/overlay_bg"
-            android:paddingLeft="8dp"
-            android:paddingRight="8dp"
-            android:paddingTop="5dp"
-            android:paddingBottom="5dp"
+            android:paddingLeft="10dp"
+            android:paddingRight="10dp"
+            android:paddingTop="7dp"
+            android:paddingBottom="7dp"
             android:text="↓ 0%"
             android:textColor="#FFFFFF"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:visibility="gone" />
     </LinearLayout>
 
@@ -78,17 +82,17 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|left"
-        android:layout_marginLeft="12dp"
-        android:layout_marginTop="62dp"
+        android:layout_marginLeft="14dp"
+        android:layout_marginTop="68dp"
         android:background="@drawable/technical_card_bg"
         android:clickable="false"
         android:focusable="false"
         android:fontFamily="monospace"
-        android:maxWidth="320dp"
-        android:paddingLeft="10dp"
-        android:paddingRight="10dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp"
+        android:maxWidth="340dp"
+        android:paddingLeft="12dp"
+        android:paddingRight="12dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="10dp"
         android:text="Локальный кэш"
         android:textColor="#F2FFFFFF"
         android:textSize="11sp"
@@ -96,34 +100,38 @@
 
     <LinearLayout
         android:id="@+id/buffering"
-        android:layout_width="wrap_content"
+        android:layout_width="260dp"
         android:layout_height="wrap_content"
         android:layout_gravity="center"
         android:orientation="vertical"
         android:gravity="center"
         android:background="@drawable/overlay_bg"
-        android:padding="22dp">
-
+        android:paddingLeft="24dp"
+        android:paddingRight="24dp"
+        android:paddingTop="22dp"
+        android:paddingBottom="20dp">
         <ProgressBar
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="46dp"
+            android:layout_height="46dp"
             style="?android:attr/progressBarStyleLarge" />
-
         <TextView
             android:id="@+id/buffering_text"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="13dp"
+            android:gravity="center"
             android:text="Подготовка видео…"
             android:textColor="#FFFFFF"
-            android:textSize="15sp" />
-
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:lineSpacingExtra="2dp" />
         <Button
             android:id="@+id/buffer_retry"
             style="@style/PrimaryButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="15dp"
+            android:minHeight="0dp"
             android:text="Повторить"
             android:visibility="gone" />
     </LinearLayout>
@@ -134,10 +142,10 @@
         android:layout_height="wrap_content"
         android:layout_gravity="center"
         android:background="@drawable/overlay_bg"
-        android:paddingLeft="18dp"
-        android:paddingRight="18dp"
-        android:paddingTop="12dp"
-        android:paddingBottom="12dp"
+        android:paddingLeft="20dp"
+        android:paddingRight="20dp"
+        android:paddingTop="13dp"
+        android:paddingBottom="13dp"
         android:textColor="#FFFFFF"
         android:textSize="18sp"
         android:textStyle="bold"
@@ -150,87 +158,59 @@
         android:layout_gravity="bottom"
         android:orientation="vertical"
         android:background="@drawable/controls_scrim"
-        android:paddingLeft="12dp"
-        android:paddingRight="12dp"
-        android:paddingTop="10dp"
-        android:paddingBottom="12dp">
+        android:paddingLeft="14dp"
+        android:paddingRight="14dp"
+        android:paddingTop="34dp"
+        android:paddingBottom="14dp">
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical">
-
             <TextView
                 android:id="@+id/time"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:background="@drawable/overlay_bg"
+                android:paddingLeft="9dp"
+                android:paddingRight="9dp"
+                android:paddingTop="5dp"
+                android:paddingBottom="5dp"
                 android:text="00:00 / 00:00"
                 android:textColor="#FFFFFF"
-                android:textSize="13sp" />
-
+                android:textSize="12sp" />
             <SeekBar
                 android:id="@+id/seek"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="32dp"
                 android:layout_weight="1"
                 android:layout_marginLeft="10dp"
-                android:layout_marginRight="10dp"
+                android:layout_marginRight="4dp"
                 android:max="1000"
-                android:minHeight="2dp"
-                android:maxHeight="2dp"
                 android:progressDrawable="@drawable/seek_progress_thin" />
         </LinearLayout>
 
         <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="9dp"
             android:scrollbars="none"
             android:fillViewport="true">
-
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:gravity="center">
-
-                <ImageButton android:id="@+id/prev" style="@style/ControlButton"
-                    android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:contentDescription="Предыдущая" app:srcCompat="@drawable/ic_skip_previous" />
-
-                <ImageButton android:id="@+id/rew" style="@style/ControlButton"
-                    android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:contentDescription="Назад 10 сек" app:srcCompat="@drawable/ic_fast_rewind" />
-
-                <ImageButton android:id="@+id/play_pause" style="@style/ControlButton"
-                    android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:contentDescription="Пауза / воспроизведение" app:srcCompat="@drawable/ic_pause" />
-
-                <ImageButton android:id="@+id/fwd" style="@style/ControlButton"
-                    android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:contentDescription="Вперёд 10 сек" app:srcCompat="@drawable/ic_fast_forward" />
-
-                <Button android:id="@+id/fwd90" style="@style/ControlButton"
-                    android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="+01:30" android:textSize="14sp" android:textColor="#FFFFFF"
-                    android:contentDescription="Длинная перемотка вперёд" />
-
-                <ImageButton android:id="@+id/next" style="@style/ControlButton"
-                    android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:contentDescription="Следующая" app:srcCompat="@drawable/ic_skip_next" />
-
-                <Button android:id="@+id/speed" style="@style/ControlButton"
-                    android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:text="1.0x" android:textColor="#FFFFFF" android:textSize="14sp" />
-
-                <ImageButton android:id="@+id/aspect" style="@style/ControlButton"
-                    android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:contentDescription="Соотношение сторон" app:srcCompat="@drawable/ic_aspect" />
-
-                <ImageButton android:id="@+id/fullscreen" style="@style/ControlButton"
-                    android:layout_width="wrap_content" android:layout_height="wrap_content"
-                    android:contentDescription="На весь экран" app:srcCompat="@drawable/ic_fullscreen" />
+                <ImageButton android:id="@+id/prev" style="@style/ControlButton" android:layout_width="50dp" android:layout_height="50dp" android:contentDescription="Предыдущая" app:srcCompat="@drawable/ic_skip_previous" />
+                <ImageButton android:id="@+id/rew" style="@style/ControlButton" android:layout_width="50dp" android:layout_height="50dp" android:contentDescription="Назад 10 сек" app:srcCompat="@drawable/ic_fast_rewind" />
+                <ImageButton android:id="@+id/play_pause" style="@style/ControlButton" android:layout_width="56dp" android:layout_height="56dp" android:padding="12dp" android:contentDescription="Пауза / воспроизведение" app:srcCompat="@drawable/ic_pause" />
+                <ImageButton android:id="@+id/fwd" style="@style/ControlButton" android:layout_width="50dp" android:layout_height="50dp" android:contentDescription="Вперёд 10 сек" app:srcCompat="@drawable/ic_fast_forward" />
+                <Button android:id="@+id/fwd90" style="@style/ControlButton" android:layout_width="wrap_content" android:layout_height="50dp" android:text="+01:30" android:textSize="13sp" android:textColor="#FFFFFF" android:contentDescription="Длинная перемотка вперёд" />
+                <ImageButton android:id="@+id/next" style="@style/ControlButton" android:layout_width="50dp" android:layout_height="50dp" android:contentDescription="Следующая" app:srcCompat="@drawable/ic_skip_next" />
+                <Button android:id="@+id/speed" style="@style/ControlButton" android:layout_width="wrap_content" android:layout_height="50dp" android:text="1.0x" android:textColor="#FFFFFF" android:textSize="13sp" />
+                <ImageButton android:id="@+id/aspect" style="@style/ControlButton" android:layout_width="50dp" android:layout_height="50dp" android:contentDescription="Соотношение сторон" app:srcCompat="@drawable/ic_aspect" />
+                <ImageButton android:id="@+id/fullscreen" style="@style/ControlButton" android:layout_width="50dp" android:layout_height="50dp" android:contentDescription="На весь экран" app:srcCompat="@drawable/ic_fullscreen" />
             </LinearLayout>
         </HorizontalScrollView>
     </LinearLayout>

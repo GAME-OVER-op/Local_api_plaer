@@ -1,128 +1,234 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/bg"
+    android:background="@drawable/bg_main"
     android:fillViewport="true"
+    android:clipToPadding="false"
     android:focusableInTouchMode="true"
     android:focusable="true">
 
     <LinearLayout
+        android:id="@+id/main_root"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:paddingLeft="18dp"
+        android:paddingRight="18dp"
+        android:paddingTop="18dp"
+        android:paddingBottom="30dp">
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/hero_bg"
+            android:padding="22dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingRight="48dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="LOCAL PLAYER"
+                    android:textColor="#CCFFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:letterSpacing="0.12" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="7dp"
+                    android:text="Ваша медиатека рядом"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="26sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="7dp"
+                    android:text="Подключайтесь к локальному серверу и продолжайте просмотр без лишних экранов."
+                    android:textColor="#D9FFFFFF"
+                    android:textSize="13sp"
+                    android:lineSpacingExtra="2dp" />
+
+                <TextView
+                    android:id="@+id/main_status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:background="@drawable/player_status_pill"
+                    android:paddingLeft="11dp"
+                    android:paddingRight="11dp"
+                    android:paddingTop="6dp"
+                    android:paddingBottom="6dp"
+                    android:text="●  Готово к подключению"
+                    android:textColor="#FFFFFFFF"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/main_settings_btn"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:layout_gravity="top|right"
+                android:background="@drawable/hero_icon_button_bg"
+                android:contentDescription="Настройки"
+                android:padding="10dp"
+                app:srcCompat="@drawable/ic_settings"
+                app:tint="#FFFFFFFF" />
+        </FrameLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
             android:orientation="vertical"
             android:background="@drawable/card_bg"
-            android:padding="20dp">
+            android:padding="18dp">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Подключение к серверу"
+                android:text="Подключение"
                 android:textColor="@color/text_primary"
-                android:textSize="20sp"
+                android:textSize="19sp"
                 android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="Укажите адрес вручную или найдите сервер автоматически в локальной сети."
+                style="@style/HintText" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:text="IP-адрес"
+                style="@style/FieldLabel" />
 
             <EditText
                 android:id="@+id/ip"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
+                android:layout_height="50dp"
+                android:layout_marginTop="7dp"
                 android:background="@drawable/edit_bg"
                 android:hint="192.168.0.100"
                 android:inputType="text"
-                android:padding="14dp"
+                android:singleLine="true"
                 android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_secondary" />
+                android:textColorHint="@color/text_tertiary"
+                android:textSize="15sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="13dp"
+                android:text="Порт"
+                style="@style/FieldLabel" />
 
             <EditText
                 android:id="@+id/port"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_height="50dp"
+                android:layout_marginTop="7dp"
                 android:background="@drawable/edit_bg"
                 android:hint="10930"
                 android:inputType="number"
-                android:padding="14dp"
+                android:singleLine="true"
                 android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_secondary" />
+                android:textColorHint="@color/text_tertiary"
+                android:textSize="15sp" />
 
             <Button
                 android:id="@+id/connect"
                 style="@style/PrimaryButton"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="52dp"
                 android:layout_marginTop="18dp"
                 android:text="Подключиться" />
 
             <Button
                 android:id="@+id/discover"
-                style="@style/PrimaryButton"
+                style="@style/SecondaryButton"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/btn_control_solid"
-                android:text="🔍 Найти серверы в сети" />
+                android:layout_height="50dp"
+                android:layout_marginTop="9dp"
+                android:text="Найти серверы в сети" />
         </LinearLayout>
 
         <TextView
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
-            android:layout_marginBottom="8dp"
-            android:text="Мои устройства"
-            android:textColor="@color/text_secondary"
-            android:textSize="14sp"
-            android:textStyle="bold" />
+            android:layout_marginLeft="4dp"
+            android:text="МОИ УСТРОЙСТВА"
+            style="@style/SectionLabel" />
 
         <TextView
             android:id="@+id/trusted_empty"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:paddingTop="8dp"
-            android:paddingBottom="8dp"
-            android:text="После первого разрешённого подключения устройство появится здесь"
+            android:layout_marginTop="9dp"
+            android:background="@drawable/card_soft_bg"
+            android:padding="18dp"
+            android:text="Здесь появятся проверенные устройства после первого разрешённого подключения."
             android:textColor="@color/text_secondary"
-            android:textSize="14sp" />
+            android:textSize="13sp"
+            android:lineSpacingExtra="2dp" />
 
         <ListView
             android:id="@+id/trusted_servers"
             android:layout_width="match_parent"
-            android:layout_height="160dp"
-            android:divider="@color/divider"
-            android:dividerHeight="1dp" />
+            android:layout_height="178dp"
+            android:layout_marginTop="9dp"
+            android:clipToPadding="false"
+            android:divider="@android:color/transparent"
+            android:dividerHeight="8dp"
+            android:listSelector="@android:color/transparent"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp" />
 
         <TextView
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:layout_marginBottom="8dp"
-            android:text="Недавние подключения"
-            android:textColor="@color/text_secondary"
-            android:textSize="14sp"
-            android:textStyle="bold" />
+            android:layout_marginTop="22dp"
+            android:layout_marginLeft="4dp"
+            android:text="НЕДАВНИЕ ПОДКЛЮЧЕНИЯ"
+            style="@style/SectionLabel" />
 
         <TextView
             android:id="@+id/history_empty"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Пока пусто — подключитесь к серверу"
+            android:layout_marginTop="9dp"
+            android:background="@drawable/card_soft_bg"
+            android:padding="18dp"
+            android:text="История пока пуста. После подключения адрес можно будет открыть одним касанием."
             android:textColor="@color/text_secondary"
-            android:textSize="14sp"
-            android:paddingTop="8dp"
-            android:paddingBottom="8dp"
+            android:textSize="13sp"
+            android:lineSpacingExtra="2dp"
             android:visibility="gone" />
 
         <ListView
             android:id="@+id/history"
             android:layout_width="match_parent"
-            android:layout_height="160dp"
-            android:divider="@color/divider"
-            android:dividerHeight="1dp" />
+            android:layout_height="178dp"
+            android:layout_marginTop="9dp"
+            android:clipToPadding="false"
+            android:divider="@android:color/transparent"
+            android:dividerHeight="8dp"
+            android:listSelector="@android:color/transparent"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp" />
     </LinearLayout>
 </ScrollView>

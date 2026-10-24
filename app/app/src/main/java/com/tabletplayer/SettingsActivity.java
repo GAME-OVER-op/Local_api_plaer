@@ -31,13 +31,17 @@ public class SettingsActivity extends AppCompatActivity {
         super.onCreate(b);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
         setContentView(R.layout.activity_settings);
-        if (getSupportActionBar() != null) {
-            getSupportActionBar().setTitle(R.string.settings);
-            getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-        }
+        UiMotion.configureWindow(this);
+        View back = findViewById(R.id.settings_back);
+        back.setOnClickListener(v -> closeScreen());
+        UiMotion.press(back);
 
         View root = findViewById(R.id.settings_root);
-        if (root != null) root.requestFocus();
+        if (root != null) {
+            root.requestFocus();
+            UiMotion.enter(root);
+            if (root instanceof android.view.ViewGroup) root.post(() -> UiMotion.cascade((android.view.ViewGroup) root));
+        }
 
         SwitchCompat themeSwitch = findViewById(R.id.theme_switch);
         themeSwitch.setChecked(App.isDark(this));
@@ -95,6 +99,7 @@ public class SettingsActivity extends AppCompatActivity {
         setupNumberField(playbackPrefetchThreads, Store.getPlaybackPrefetchThreads(this));
 
         Button reset = findViewById(R.id.reset_libvlc_btn);
+        UiMotion.press(reset);
         reset.setOnClickListener(v -> {
             Store.resetLibVlcSettings(this);
             contentLoadSpinner.setSelection(Store.CONTENT_LOAD_AUTO);
@@ -115,7 +120,7 @@ public class SettingsActivity extends AppCompatActivity {
 
 
     private ArrayAdapter<String> labelAdapter(String[] values) {
-        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, values) {
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, R.layout.spinner_item, values) {
             @Override
             public View getView(int position, View convertView, android.view.ViewGroup parent) {
                 View v = super.getView(position, convertView, parent);
@@ -125,7 +130,7 @@ public class SettingsActivity extends AppCompatActivity {
                 return v;
             }
         };
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        adapter.setDropDownViewResource(R.layout.spinner_dropdown_item);
         return adapter;
     }
 
@@ -211,12 +216,21 @@ public class SettingsActivity extends AppCompatActivity {
         super.onPause();
     }
 
-    @Override
-    public boolean onSupportNavigateUp() {
+    private void closeScreen() {
         saveCachingFields();
         finish();
         overridePendingTransition(R.anim.slide_in_left, R.anim.slide_out_right);
+    }
+
+    @Override
+    public boolean onSupportNavigateUp() {
+        closeScreen();
         return true;
+    }
+
+    @Override
+    public void onBackPressed() {
+        closeScreen();
     }
 
     private interface SelectionHandler {

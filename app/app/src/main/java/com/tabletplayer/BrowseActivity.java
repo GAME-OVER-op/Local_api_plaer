@@ -79,7 +79,8 @@ public class BrowseActivity extends AppCompatActivity {
     private ListView listView, bookmarksList, recentDirs, recentVideos;
     private GridView gridView;
     private EditText searchBox;
-    private TextView empty, serverStatus, drawerTitle, infoName, infoPath, infoMeta, downloadBarText, browserSummary;
+    private View empty;
+    private TextView serverStatus, drawerTitle, infoName, infoPath, infoMeta, downloadBarText, browserSummary;
     private Button sortBtn, viewModeBtn, bookmarksBtn, infoPlay, infoDownload, infoInstall, infoLocation, toTop;
     private LinearLayout crumbs, skeleton, rightDrawer, bookmarksContent;
     private View infoContent, drawerScrim;
@@ -141,6 +142,7 @@ public class BrowseActivity extends AppCompatActivity {
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         setContentView(R.layout.activity_browse);
+        UiMotion.configureWindow(this);
         base = getIntent().getStringExtra("base");
         path = getIntent().getStringExtra("path");
         serverName = getIntent().getStringExtra("server_name");
@@ -162,6 +164,10 @@ public class BrowseActivity extends AppCompatActivity {
         updateServerStatus(true);
         updateQueueUi();
         buildSkeleton();
+        swipe.setColorSchemeResources(R.color.primary, R.color.accent);
+        View browseRoot = findViewById(R.id.browse_root);
+        UiMotion.enter(browseRoot);
+        if (browseRoot instanceof ViewGroup) browseRoot.post(() -> UiMotion.cascade((ViewGroup) browseRoot));
         loadList(path, 0);
     }
 
@@ -218,6 +224,7 @@ public class BrowseActivity extends AppCompatActivity {
         ImageButton downloadsBtn = findViewById(R.id.downloads_btn);
         Button drawerClose = findViewById(R.id.drawer_close);
 
+        UiMotion.pressAll(searchBtn, serversBtn, downloadsBtn, drawerClose, viewModeBtn, sortBtn, queueBtn, queueClear, queuePlay, toTop, infoPlay, infoDownload, infoInstall, infoLocation, undoCancel);
         downloadsBtn.setOnClickListener(v -> openDownloads());
         downloadBar.setOnClickListener(v -> openDownloads());
         serversBtn.setOnClickListener(v -> { finish(); overridePendingTransition(R.anim.slide_in_left, R.anim.slide_out_right); });
@@ -440,7 +447,7 @@ public class BrowseActivity extends AppCompatActivity {
             if (Settings.Global.getFloat(getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f) return 0;
         } catch (Exception ignored) {}
         android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
-        return am != null && am.isLowRamDevice() ? 140L : 210L;
+        return am != null && am.isLowRamDevice() ? 160L : 250L;
     }
 
     private void animateContentIn(int direction) {
@@ -1083,7 +1090,7 @@ public class BrowseActivity extends AppCompatActivity {
 
     class PathAdapter extends ArrayAdapter<UiStore.PathItem> {
         private final List<UiStore.PathItem> data;
-        PathAdapter(List<UiStore.PathItem> data) { super(BrowseActivity.this, android.R.layout.simple_list_item_2, android.R.id.text1, data); this.data = data; }
+        PathAdapter(List<UiStore.PathItem> data) { super(BrowseActivity.this, R.layout.drawer_path_item, android.R.id.text1, data); this.data = data; }
         @Override public View getView(int position, View convertView, ViewGroup parent) {
             View v = super.getView(position, convertView, parent); TextView a = v.findViewById(android.R.id.text1), b = v.findViewById(android.R.id.text2); UiStore.PathItem x = data.get(position);
             a.setText(x.name); a.setTextColor(getResources().getColor(R.color.text_primary)); a.setTextSize(14); b.setText(x.path.isEmpty() ? "Домой" : x.path); b.setTextColor(getResources().getColor(R.color.text_secondary)); b.setTextSize(11); return v;

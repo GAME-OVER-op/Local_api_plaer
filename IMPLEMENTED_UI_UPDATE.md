@@ -45,3 +45,26 @@ Validation performed in this environment:
 - Skeleton rows now use a moving darker shimmer band from left to right, with slight phase offsets between rows.
 - Shimmer animation is stopped when loading finishes, the activity pauses, or the activity is destroyed.
 - APK info panel restored: before download it shows Download + Download and install; after a complete download it shows Download again + Install.
+
+## Full modern UI refresh (2026-10-25)
+
+The visual layer was rebuilt while keeping the existing server, browser, download and playback logic intact.
+
+- Replaced the legacy ActionBar look with a unified custom app chrome across Main, Downloads and Settings.
+- Added a new adaptive light/dark palette with indigo + teal accents, high-contrast surfaces, softer borders and consistent state colors.
+- Rebuilt connection screen with a hero header, clearer form hierarchy, modern trusted/recent server cards and a persistent visual network state.
+- Reworked Browser controls, search, breadcrumbs, list/grid cards, empty state, queue/download bars and side drawer into one visual system.
+- Reworked Downloads with a dedicated header, card rows, animated empty state and consistent back navigation.
+- Reorganized Settings into clear Playback / Appearance / Engine & cache groups, with modern fields, spinners, switches and reset action.
+- Refreshed Player overlays: glass-style header/badges, buffering card, seek area and controls; show/hide transitions now animate instead of snapping.
+- Added shared `UiMotion` behavior for screen entrance, staggered sections, press feedback, animated visibility, list layout animation and system bar contrast.
+- Updated activity and player transitions to slower, smoother motion while respecting Android animation scale where browser motion is concerned.
+- Preserved every pre-existing required layout ID used by Java code; new IDs were only added for the new app chrome.
+
+Validation for this refresh:
+
+- 76 Android resource XML files parsed successfully.
+- All custom `R.id` references used by Java resolve to an ID in the layouts.
+- All custom layout/drawable/anim/color/string/style/menu references resolve.
+- Modified Java files pass a parser-level `javac` syntax smoke test; diagnostics are only unresolved Android classes because this environment has no Android SDK jar.
+- A full Gradle Android build cannot be executed in this sandbox because Gradle and the Android SDK are not installed. The repository CI already provisions Gradle 8.7, Android 34 and build-tools 34.0.0 and remains the authoritative full build check.

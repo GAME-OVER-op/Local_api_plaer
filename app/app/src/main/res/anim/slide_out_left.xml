@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<set xmlns:android="http://schemas.android.com/apk/res/android" android:interpolator="@android:anim/decelerate_interpolator">
-    <translate android:fromXDelta="0" android:toXDelta="-8%p" android:duration="220" />
-    <alpha android:fromAlpha="1.0" android:toAlpha="0.5" android:duration="220" />
+<set xmlns:android="http://schemas.android.com/apk/res/android" android:interpolator="@android:anim/accelerate_decelerate_interpolator">
+    <translate android:fromXDelta="0" android:toXDelta="-4%p" android:duration="240" />
+    <alpha android:fromAlpha="1.0" android:toAlpha="0.55" android:duration="220" />
 </set>
