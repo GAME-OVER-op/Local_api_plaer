@@ -136,6 +136,128 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="24dp"
                 android:layout_marginLeft="4dp"
+                android:text="ИЗОБРАЖЕНИЕ"
+                style="@style/SectionLabel" />
+
+            <LinearLayout
+                android:id="@+id/picture_settings_card"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="9dp"
+                android:orientation="vertical"
+                android:background="@drawable/card_bg"
+                android:padding="18dp">
+
+                <androidx.appcompat.widget.SwitchCompat
+                    android:id="@+id/picture_enhancement_switch"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="48dp"
+                    android:text="Улучшение изображения"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="Аккуратная коррекция изображения средствами VLC. Для HDR-видео коррекция отключается автоматически, чтобы не повреждать расширенный динамический диапазон."
+                    style="@style/HintText" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
+                    android:text="Профиль"
+                    style="@style/FieldLabel" />
+                <Spinner
+                    android:id="@+id/picture_preset_spinner"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="7dp"
+                    android:background="@drawable/spinner_bg"
+                    android:paddingLeft="12dp"
+                    android:paddingRight="12dp" />
+
+                <LinearLayout
+                    android:id="@+id/picture_controls"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:orientation="vertical">
+
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal">
+                        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Контрастность" style="@style/FieldLabel" />
+                        <TextView android:id="@+id/picture_contrast_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="100%" android:textColor="@color/text_secondary" android:textSize="13sp" />
+                    </LinearLayout>
+                    <SeekBar android:id="@+id/picture_contrast_seek" android:layout_width="match_parent" android:layout_height="36dp" android:max="50" android:progress="20" />
+
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:gravity="center_vertical" android:orientation="horizontal">
+                        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Яркость изображения" style="@style/FieldLabel" />
+                        <TextView android:id="@+id/picture_brightness_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="100%" android:textColor="@color/text_secondary" android:textSize="13sp" />
+                    </LinearLayout>
+                    <SeekBar android:id="@+id/picture_brightness_seek" android:layout_width="match_parent" android:layout_height="36dp" android:max="20" android:progress="10" />
+
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:gravity="center_vertical" android:orientation="horizontal">
+                        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Насыщенность" style="@style/FieldLabel" />
+                        <TextView android:id="@+id/picture_saturation_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="100%" android:textColor="@color/text_secondary" android:textSize="13sp" />
+                    </LinearLayout>
+                    <SeekBar android:id="@+id/picture_saturation_seek" android:layout_width="match_parent" android:layout_height="36dp" android:max="50" android:progress="20" />
+
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:gravity="center_vertical" android:orientation="horizontal">
+                        <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Гамма" style="@style/FieldLabel" />
+                        <TextView android:id="@+id/picture_gamma_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="100%" android:textColor="@color/text_secondary" android:textSize="13sp" />
+                    </LinearLayout>
+                    <SeekBar android:id="@+id/picture_gamma_seek" android:layout_width="match_parent" android:layout_height="36dp" android:max="40" android:progress="20" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="Яркость экрана регулируется отдельно вертикальным свайпом по левой половине плеера. Справа остаётся громкость."
+                        style="@style/HintText" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="14dp"
+                    android:background="@drawable/card_soft_bg"
+                    android:orientation="vertical"
+                    android:padding="12dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="HDR · Автоматически"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="HDR10, HLG и Dolby Vision определяются автоматически. Для HDR приложение сохраняет прямой вывод VLC и отключает SDR-коррекцию и генерацию кадров, если они могут ухудшить динамический диапазон."
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/reset_picture_btn"
+                    style="@style/SecondaryButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="16dp"
+                    android:text="Сбросить изображение" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:layout_marginLeft="4dp"
                 android:text="ОФОРМЛЕНИЕ"
                 style="@style/SectionLabel" />
 

@@ -9,6 +9,7 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.Spinner;
 import android.widget.TextView;
+import android.widget.SeekBar;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SwitchCompat;
@@ -18,6 +19,7 @@ public class SettingsActivity extends AppCompatActivity {
     private static final String[] DECODER_LABELS = {"Автоматически", "Аппаратный", "Программный"};
     private static final String[] SKIP_LOOP_LABELS = {"Выкл", "nonref", "bidir", "all"};
     private static final String[] SKIP_LOOP_VALUES = {"off", "nonref", "bidir", "all"};
+    private static final String[] PICTURE_PRESET_LABELS = {"Оригинал", "Кино", "Насыщенный", "Пользовательский"};
 
     private EditText networkCaching;
     private EditText fileCaching;
@@ -25,6 +27,12 @@ public class SettingsActivity extends AppCompatActivity {
     private EditText playbackCacheThreads;
     private EditText playbackPrefetchThreads;
     private EditText longJump;
+    private SwitchCompat pictureEnhancementSwitch;
+    private Spinner picturePresetSpinner;
+    private View pictureControls;
+    private SeekBar pictureContrastSeek, pictureBrightnessSeek, pictureSaturationSeek, pictureGammaSeek;
+    private TextView pictureContrastValue, pictureBrightnessValue, pictureSaturationValue, pictureGammaValue;
+    private boolean updatingPictureControls;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -57,6 +65,8 @@ public class SettingsActivity extends AppCompatActivity {
         SwitchCompat smoothSwitch = findViewById(R.id.smooth_video_switch);
         smoothSwitch.setChecked(Store.getSmoothVideo(this));
         smoothSwitch.setOnCheckedChangeListener((btn, checked) -> Store.setSmoothVideo(this, checked));
+
+        setupPictureControls();
 
         Spinner contentLoadSpinner = findViewById(R.id.content_load_mode_spinner);
         ArrayAdapter<String> contentLoadAdapter = labelAdapter(CONTENT_LOAD_LABELS);
@@ -116,6 +126,115 @@ public class SettingsActivity extends AppCompatActivity {
         });
 
         if (root != null) root.requestFocus();
+    }
+
+
+    private void setupPictureControls() {
+        pictureEnhancementSwitch = findViewById(R.id.picture_enhancement_switch);
+        picturePresetSpinner = findViewById(R.id.picture_preset_spinner);
+        pictureControls = findViewById(R.id.picture_controls);
+        pictureContrastSeek = findViewById(R.id.picture_contrast_seek);
+        pictureBrightnessSeek = findViewById(R.id.picture_brightness_seek);
+        pictureSaturationSeek = findViewById(R.id.picture_saturation_seek);
+        pictureGammaSeek = findViewById(R.id.picture_gamma_seek);
+        pictureContrastValue = findViewById(R.id.picture_contrast_value);
+        pictureBrightnessValue = findViewById(R.id.picture_brightness_value);
+        pictureSaturationValue = findViewById(R.id.picture_saturation_value);
+        pictureGammaValue = findViewById(R.id.picture_gamma_value);
+
+        ArrayAdapter<String> pictureAdapter = labelAdapter(PICTURE_PRESET_LABELS);
+        picturePresetSpinner.setAdapter(pictureAdapter);
+        picturePresetSpinner.setSelection(Store.getPicturePreset(this), false);
+
+        pictureEnhancementSwitch.setChecked(Store.getPictureEnhancement(this));
+        pictureEnhancementSwitch.setOnCheckedChangeListener((buttonView, checked) -> {
+            if (updatingPictureControls) return;
+            Store.setPictureEnhancement(this, checked);
+            updatePictureEnabledState();
+        });
+
+        SeekBar.OnSeekBarChangeListener listener = new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!fromUser || updatingPictureControls) return;
+                savePictureSlidersAsCustom();
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        };
+        pictureContrastSeek.setOnSeekBarChangeListener(listener);
+        pictureBrightnessSeek.setOnSeekBarChangeListener(listener);
+        pictureSaturationSeek.setOnSeekBarChangeListener(listener);
+        pictureGammaSeek.setOnSeekBarChangeListener(listener);
+
+        picturePresetSpinner.setOnItemSelectedListener(new SimpleItemSelectedListener(position -> {
+            if (updatingPictureControls) return;
+            int preset = Math.max(Store.PICTURE_PRESET_ORIGINAL, Math.min(Store.PICTURE_PRESET_CUSTOM, position));
+            if (preset != Store.PICTURE_PRESET_CUSTOM) Store.applyPicturePreset(this, preset);
+            else Store.setPicturePreset(this, preset);
+            loadPictureValuesIntoUi();
+        }));
+
+        Button resetPicture = findViewById(R.id.reset_picture_btn);
+        UiMotion.press(resetPicture);
+        resetPicture.setOnClickListener(v -> {
+            Store.resetPictureSettings(this);
+            loadPictureValuesIntoUi();
+            if (pictureEnhancementSwitch != null) pictureEnhancementSwitch.requestFocus();
+        });
+
+        loadPictureValuesIntoUi();
+    }
+
+    private void savePictureSlidersAsCustom() {
+        int contrast = Store.PICTURE_CONTRAST_MIN + pictureContrastSeek.getProgress();
+        int brightness = Store.PICTURE_BRIGHTNESS_MIN + pictureBrightnessSeek.getProgress();
+        int saturation = Store.PICTURE_SATURATION_MIN + pictureSaturationSeek.getProgress();
+        int gamma = Store.PICTURE_GAMMA_MIN + pictureGammaSeek.getProgress();
+        Store.setPictureValues(this, contrast, brightness, saturation, gamma);
+        Store.setPicturePreset(this, Store.PICTURE_PRESET_CUSTOM);
+        updatingPictureControls = true;
+        picturePresetSpinner.setSelection(Store.PICTURE_PRESET_CUSTOM, false);
+        updatingPictureControls = false;
+        updatePictureLabels(contrast, brightness, saturation, gamma);
+    }
+
+    private void loadPictureValuesIntoUi() {
+        updatingPictureControls = true;
+        boolean enabled = Store.getPictureEnhancement(this);
+        int preset = Store.getPicturePreset(this);
+        int contrast = Store.getPictureContrast(this);
+        int brightness = Store.getPictureBrightness(this);
+        int saturation = Store.getPictureSaturation(this);
+        int gamma = Store.getPictureGamma(this);
+        pictureEnhancementSwitch.setChecked(enabled);
+        picturePresetSpinner.setSelection(preset, false);
+        pictureContrastSeek.setProgress(contrast - Store.PICTURE_CONTRAST_MIN);
+        pictureBrightnessSeek.setProgress(brightness - Store.PICTURE_BRIGHTNESS_MIN);
+        pictureSaturationSeek.setProgress(saturation - Store.PICTURE_SATURATION_MIN);
+        pictureGammaSeek.setProgress(gamma - Store.PICTURE_GAMMA_MIN);
+        updatePictureLabels(contrast, brightness, saturation, gamma);
+        updatingPictureControls = false;
+        updatePictureEnabledState();
+    }
+
+    private void updatePictureLabels(int contrast, int brightness, int saturation, int gamma) {
+        pictureContrastValue.setText(contrast + "%");
+        pictureBrightnessValue.setText(brightness + "%");
+        pictureSaturationValue.setText(saturation + "%");
+        pictureGammaValue.setText(gamma + "%");
+    }
+
+    private void updatePictureEnabledState() {
+        boolean enabled = pictureEnhancementSwitch != null && pictureEnhancementSwitch.isChecked();
+        if (pictureControls != null) {
+            pictureControls.setAlpha(enabled ? 1f : 0.48f);
+            pictureControls.setEnabled(enabled);
+        }
+        if (picturePresetSpinner != null) picturePresetSpinner.setEnabled(enabled);
+        if (pictureContrastSeek != null) pictureContrastSeek.setEnabled(enabled);
+        if (pictureBrightnessSeek != null) pictureBrightnessSeek.setEnabled(enabled);
+        if (pictureSaturationSeek != null) pictureSaturationSeek.setEnabled(enabled);
+        if (pictureGammaSeek != null) pictureGammaSeek.setEnabled(enabled);
     }
 
 

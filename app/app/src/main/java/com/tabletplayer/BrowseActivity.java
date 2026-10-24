@@ -220,7 +220,7 @@ public class BrowseActivity extends AppCompatActivity {
 
     private void bindActions() {
         Button searchBtn = findViewById(R.id.search_btn);
-        Button serversBtn = findViewById(R.id.servers_btn);
+        ImageButton serversBtn = findViewById(R.id.servers_btn);
         ImageButton downloadsBtn = findViewById(R.id.downloads_btn);
         Button drawerClose = findViewById(R.id.drawer_close);
 

@@ -8,6 +8,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Build;
+import android.provider.Settings;
 import android.support.v4.media.session.MediaSessionCompat;
 import android.support.v4.media.session.PlaybackStateCompat;
 import android.view.GestureDetector;
@@ -75,6 +76,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private String base, path, name, folder, serverName, serverId;
     private String historyKey = "", mediaVersion = "";
+    private long mediaSizeBytes = -1L;
     private boolean preparingIdentity, askSavedPosition;
     private long requestedResumeMs;
     private boolean local = false;
@@ -114,9 +116,10 @@ public class PlayerActivity extends AppCompatActivity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private long duration = 0, currentMs = 0, pendingResumeMs = 0, seekPreview = 0;
     private boolean started = false, controlsVisible = true, dragging = false, immersive = true;
-    private int mode = 0; // 0 none, 1 seek, 2 volume
+    private int mode = 0; // 0 none, 1 seek, 2 volume, 3 brightness
     private long dragStartTime = 0;
-    private int dragStartVol = 100, volume = 100, reconnectAttempts = 0;
+    private int dragStartVol = 100, dragStartBrightness = 50, volume = 100, reconnectAttempts = 0;
+    private int playerBrightnessPercent = -1;
     private boolean reconnecting = false;
     private boolean ignoreGestureSequence = false;
     private boolean videoViewsAttached = false;
@@ -130,6 +133,15 @@ public class PlayerActivity extends AppCompatActivity {
     private boolean libVlcCatchUpFrames = true;
     private boolean libVlcAvcodecFast = false;
     private String libVlcSkipLoopFilter = "off";
+    private boolean pictureEnhancementSetting = false;
+    private boolean pictureEnhancementDisabledForSource = false;
+    private int pictureContrast = 100, pictureBrightness = 100, pictureSaturation = 100, pictureGamma = 100;
+    private int hdrType = HdrVideoProbe.TYPE_UNKNOWN;
+    private String hdrLabel = "";
+    private boolean hdrDisplaySupported = false;
+    private Thread hdrProbeThread;
+    private int hdrProbeEpoch = 0;
+    private boolean hdrProbeStarted = false;
     private boolean localCacheStartupWaiting = false;
     private long localCacheStartupBaseMs = 0;
     private int lastBufferingBucket = -1;
@@ -139,6 +151,8 @@ public class PlayerActivity extends AppCompatActivity {
     private long lastTechnicalCardUpdateMs = 0;
     private long lastMediaButtonAt = 0;
     private int lastMediaButtonKey = 0;
+    private int smoothAudioRecoveryGeneration = -1;
+    private int smoothAudioRecoveryAttempt = 0;
     private int currentVoutCount = 0;
     private boolean completedCurrent = false;
     private SourceMode sourceMode = SourceMode.DIRECT_REMOTE;
@@ -200,6 +214,7 @@ public class PlayerActivity extends AppCompatActivity {
         super.onCreate(b);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         setContentView(R.layout.activity_player);
+        applySavedPlayerBrightness();
         installFullscreenGuards();
         scheduleImmersiveReapply();
 
@@ -362,6 +377,31 @@ public class PlayerActivity extends AppCompatActivity {
         libVlcCatchUpFrames = Store.getLibVlcCatchUpFrames(this);
         libVlcAvcodecFast = Store.getLibVlcAvcodecFast(this);
         libVlcSkipLoopFilter = Store.getLibVlcSkipLoopFilter(this);
+        loadPictureSettings();
+    }
+
+    private void loadPictureSettings() {
+        pictureEnhancementSetting = Store.getPictureEnhancement(this);
+        pictureContrast = Store.getPictureContrast(this);
+        pictureBrightness = Store.getPictureBrightness(this);
+        pictureSaturation = Store.getPictureSaturation(this);
+        pictureGamma = Store.getPictureGamma(this);
+    }
+
+    private boolean refreshPictureSettings() {
+        boolean enabled = Store.getPictureEnhancement(this);
+        int contrast = Store.getPictureContrast(this);
+        int brightness = Store.getPictureBrightness(this);
+        int saturation = Store.getPictureSaturation(this);
+        int gamma = Store.getPictureGamma(this);
+        boolean changed = enabled != pictureEnhancementSetting || contrast != pictureContrast
+                || brightness != pictureBrightness || saturation != pictureSaturation || gamma != pictureGamma;
+        pictureEnhancementSetting = enabled;
+        pictureContrast = contrast;
+        pictureBrightness = brightness;
+        pictureSaturation = saturation;
+        pictureGamma = gamma;
+        return changed;
     }
 
     private void initPlayer() {
@@ -393,6 +433,7 @@ public class PlayerActivity extends AppCompatActivity {
         if (!smoothSetting || smoothDisabledForSource) {
             mp.attachViews(videoLayout, null, false, false);
             videoViewsAttached = true;
+            ensureAudioFocus();
             if (activityActive) mp.play();
             mp.setRate(speeds[speedIdx]);
             return;
@@ -412,6 +453,7 @@ public class PlayerActivity extends AppCompatActivity {
                         videoViewsAttached = true;
                         mp.getVLCVout().setWindowSize(640, 360);
                         if (activityActive) {
+                            ensureAudioFocus();
                             mp.play(); mp.setRate(speeds[speedIdx]);
                             ui.postDelayed(smoothStartupTimeout, 10000);
                         }
@@ -456,13 +498,79 @@ public class PlayerActivity extends AppCompatActivity {
             fallbackSmooth("Не удалось запустить вывод GPU");
     }
 
-    private void applySmoothAudioDelay() {
-        if (player == null || smoothRenderer == null || !started || player.getAudioTracksCount() == 0) return;
-        if (appliedSmoothAudioDelayUs != smoothAudioDelayUs) {
-            if (player.setAudioDelay(smoothAudioDelayUs)) appliedSmoothAudioDelayUs = smoothAudioDelayUs;
-            else fallbackSmooth("Не удалось синхронизировать звук");
+    private boolean applySmoothAudioDelay() {
+        if (player == null || smoothRenderer == null || !started || player.getAudioTracksCount() == 0) return false;
+        if (appliedSmoothAudioDelayUs == smoothAudioDelayUs) return true;
+        if (player.setAudioDelay(smoothAudioDelayUs)) {
+            appliedSmoothAudioDelayUs = smoothAudioDelayUs;
+            return true;
+        }
+        // Audio ES may become selectable just after Playing. Retrying is safer than
+        // restarting the source and losing the freshly initialized audio output.
+        return false;
+    }
+
+    private void ensureAudioFocus() {
+        if (audioManager == null) audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+        if (audioManager != null) {
+            try {
+                audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+            } catch (Throwable ignored) {
+            }
         }
     }
+
+    private boolean ensureSmoothAudioOutput() {
+        if (player == null || smoothRenderer == null || !started) return true;
+        try {
+            int count = player.getAudioTracksCount();
+            if (count <= 0) return false;
+            int selected = player.getAudioTrack();
+            if (selected < 0) {
+                MediaPlayer.TrackDescription[] tracks = player.getAudioTracks();
+                if (tracks != null) {
+                    for (MediaPlayer.TrackDescription track : tracks) {
+                        if (track != null && track.id >= 0 && player.setAudioTrack(track.id)) {
+                            selected = track.id;
+                            PlayerDiagnostics.log(this, "smooth-audio", "selected track=" + track.id);
+                            break;
+                        }
+                    }
+                }
+            }
+            if (selected < 0) return false;
+            ensureAudioFocus();
+            player.setVolume(volume);
+            return applySmoothAudioDelay();
+        } catch (Throwable error) {
+            PlayerDiagnostics.log(this, "smooth-audio-error", error);
+            return false;
+        }
+    }
+
+    private void scheduleSmoothAudioRecovery(int generation) {
+        if (smoothRenderer == null || !isCurrentGeneration(generation)) return;
+        smoothAudioRecoveryGeneration = generation;
+        smoothAudioRecoveryAttempt = 0;
+        ui.removeCallbacks(smoothAudioRecovery);
+        ui.postDelayed(smoothAudioRecovery, 120L);
+    }
+
+    private final Runnable smoothAudioRecovery = new Runnable() {
+        @Override
+        public void run() {
+            int generation = smoothAudioRecoveryGeneration;
+            if (!isCurrentGeneration(generation) || smoothRenderer == null || player == null || !started) return;
+            smoothAudioRecoveryAttempt++;
+            boolean ready = ensureSmoothAudioOutput();
+            PlayerDiagnostics.log(PlayerActivity.this, "smooth-audio", "attempt=" + smoothAudioRecoveryAttempt
+                    + " tracks=" + player.getAudioTracksCount() + " selected=" + player.getAudioTrack()
+                    + " ready=" + ready);
+            if (!ready && smoothAudioRecoveryAttempt < 8) {
+                ui.postDelayed(this, smoothAudioRecoveryAttempt < 3 ? 180L : 450L);
+            }
+        }
+    };
 
     private void updateSmoothMetadata() {
         if (smoothRenderer == null || player == null || !activityActive) return;
@@ -554,6 +662,9 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void releaseSmoothRenderer() {
         ui.removeCallbacks(smoothStartupTimeout);
+        ui.removeCallbacks(smoothAudioRecovery);
+        smoothAudioRecoveryGeneration = -1;
+        smoothAudioRecoveryAttempt = 0;
         ui.removeCallbacks(fpsProbeTimeout);
         fpsProbeEpoch++;
         if (fpsProbe != null) { fpsProbe.interrupt(); fpsProbe = null; }
@@ -618,6 +729,7 @@ public class PlayerActivity extends AppCompatActivity {
 
     private void startSource(String p, String nm, long resume, SourceMode mode, boolean reconnectStart, String mediaOverrideUri) {
         if (destroyed || libVLC == null) return;
+        cancelHdrProbe();
         if (mode != SourceMode.LOCAL_CACHE) {
             stopPlaybackCache(false);
         }
@@ -698,12 +810,13 @@ public class PlayerActivity extends AppCompatActivity {
             case MediaPlayer.Event.Playing:
                 if (smoothRenderer != null) smoothRenderer.setPlaying(true);
                 updateSmoothMetadata();
+                scheduleHdrProbe(generation);
                 if (!isCurrentGeneration(generation)) return;
                 Store.markWatched(this, historyKey);
                 reconnectAttempts = 0;
                 reconnecting = false;
                 started = true;
-                applySmoothAudioDelay();
+                if (smoothRenderer != null) scheduleSmoothAudioRecovery(generation);
                 if (!isCurrentGeneration(generation)) return;
                 terminalHandled = false;
                 setPlaybackPhase(sourceMode == SourceMode.DIRECT_REMOTE ? PlaybackPhase.PLAYING_DIRECT : PlaybackPhase.PLAYING_LOCAL);
@@ -757,19 +870,30 @@ public class PlayerActivity extends AppCompatActivity {
                     fallbackSmooth("Декодер не поддерживает вывод GPU");
                     break;
                 }
+                if (!started && pictureEnhancementSetting && !pictureEnhancementDisabledForSource
+                        && !(pictureContrast == 100 && pictureBrightness == 100
+                        && pictureSaturation == 100 && pictureGamma == 100)) {
+                    pictureEnhancementDisabledForSource = true;
+                    long pictureFallbackPosition = Math.max(pendingResumeMs, Math.max(0L, player.getTime()));
+                    SourceMode pictureFallbackMode = sourceMode;
+                    String pictureFallbackOverride = currentMediaOverrideUri;
+                    PlayerDiagnostics.log(this, "picture", "adjust fallback after VLC error");
+                    flashInfo("Коррекция изображения отключена для этого видео");
+                    startSource(path, name, pictureFallbackPosition, pictureFallbackMode, true, pictureFallbackOverride);
+                    break;
+                }
                 handleDrop(generation);
                 break;
             case MediaPlayer.Event.ESSelected:
                 updateSmoothMetadata();
+                if (smoothRenderer != null && started) scheduleSmoothAudioRecovery(generation);
                 break;
         }
     }
 
     private void setupSession() {
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
-        if (audioManager != null) {
-            audioManager.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
-        }
+        ensureAudioFocus();
         try {
         session = new MediaSessionCompat(this, "TabletPlayer");
         session.setFlags(MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS
@@ -836,8 +960,27 @@ public class PlayerActivity extends AppCompatActivity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (handleVolumeKeyEvent(event)) return true;
         if (handleMediaKeyEvent(event, "dispatch")) return true;
         return super.dispatchKeyEvent(event);
+    }
+
+    private boolean handleVolumeKeyEvent(KeyEvent event) {
+        if (event == null) return false;
+        int code = event.getKeyCode();
+        if (code != KeyEvent.KEYCODE_VOLUME_UP && code != KeyEvent.KEYCODE_VOLUME_DOWN) return false;
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            if (audioManager == null) audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
+            if (audioManager != null) {
+                int direction = code == KeyEvent.KEYCODE_VOLUME_UP ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER;
+                audioManager.adjustStreamVolume(AudioManager.STREAM_MUSIC, direction, 0);
+                int max = Math.max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+                int current = Math.max(0, audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+                int percent = Math.round(current * 100f / max);
+                flashInfo("🔊 " + percent + "%");
+            }
+        }
+        return true;
     }
 
     private boolean handleMediaKeyEvent(KeyEvent ev, String source) {
@@ -929,7 +1072,20 @@ public class PlayerActivity extends AppCompatActivity {
         } else {
             media.addOption(":file-caching=" + fileCachingMs);
         }
+        applyPictureOptions(media);
         return media;
+    }
+
+    private void applyPictureOptions(Media media) {
+        if (media == null || !pictureEnhancementSetting || pictureEnhancementDisabledForSource) return;
+        if (pictureContrast == 100 && pictureBrightness == 100 && pictureSaturation == 100 && pictureGamma == 100) return;
+        media.addOption(":video-filter=adjust");
+        media.addOption(String.format(java.util.Locale.US, ":contrast=%.2f", pictureContrast / 100f));
+        media.addOption(String.format(java.util.Locale.US, ":brightness=%.2f", pictureBrightness / 100f));
+        media.addOption(String.format(java.util.Locale.US, ":saturation=%.2f", pictureSaturation / 100f));
+        media.addOption(String.format(java.util.Locale.US, ":gamma=%.2f", pictureGamma / 100f));
+        PlayerDiagnostics.log(this, "picture", "adjust c=" + pictureContrast + " b=" + pictureBrightness
+                + " s=" + pictureSaturation + " g=" + pictureGamma);
     }
 
     private void playPath(String p, String nm, long resume) {
@@ -940,11 +1096,17 @@ public class PlayerActivity extends AppCompatActivity {
     private void preparePlayback(final String p, final String nm, final long resume, final boolean askSaved) {
         if (destroyed) return;
         final int generation = ++playbackGeneration;
+        mediaSizeBytes = -1L;
         ui.removeCallbacks(reconnectAgain);
         stopPrefetchWindow();
         releaseCurrentPlayer();
         smoothDisabledForSource = false;
+        pictureEnhancementDisabledForSource = false;
         smoothStatus = "";
+        cancelHdrProbe();
+        hdrType = HdrVideoProbe.TYPE_UNKNOWN;
+        hdrLabel = "";
+        hdrDisplaySupported = false;
         stopPlaybackCache(false);
         path = p; name = nm;
         currentMs = 0; duration = 0; pendingResumeMs = resume;
@@ -966,7 +1128,7 @@ public class PlayerActivity extends AppCompatActivity {
                 ui.post(() -> {
                     if (!isCurrentGeneration(generation)) return;
                     historyKey = key;
-                    if (info != null) { mediaVersion = info.version; serverId = info.serverId; }
+                    if (info != null) { mediaVersion = info.version; serverId = info.serverId; mediaSizeBytes = info.size; }
                     preparingIdentity = false;
                     long saved = askSaved ? Store.getPos(this, key) : 0;
                     if (saved > 5000) {
@@ -1034,6 +1196,7 @@ public class PlayerActivity extends AppCompatActivity {
         stopPrefetchWindow();
         stopPlaybackCache(false);
         activeCacheEntry = PlaybackCacheManager.get().entryFor(this, base, p, nm, mediaVersion);
+        if (mediaSizeBytes > 0) activeCacheEntry.totalBytes = mediaSizeBytes;
         cacheTask = new PlaybackCacheTask(this, activeCacheEntry, false, new PlaybackCacheTask.Listener() {
             @Override
             public void onCacheProgress(PlaybackCacheTask task) {
@@ -1123,7 +1286,14 @@ public class PlayerActivity extends AppCompatActivity {
     private void startFromLocalCache(PlaybackCacheTask task, long resume) {
         if (destroyed || task == null || task != cacheTask || cacheProxy != null) return;
         try {
-            if (cacheProxy != null) cacheProxy.close();
+            if (task.complete() && task.entry().finalFile.isFile()) {
+                // Whole-file preparation (notably <= 50 MiB) needs no localhost proxy at all.
+                // Start directly from the finalized cache file so there is no second-stage hand-off.
+                showBuffering("Запуск загруженной серии…");
+                startSource(task.entry().path, task.entry().name, resume, SourceMode.LOCAL_CACHE, false,
+                        Uri.fromFile(task.entry().finalFile).toString());
+                return;
+            }
             cacheProxy = new PlaybackProxyServer(task);
             cacheProxyUrl = cacheProxy.start();
             showBuffering("Запуск из локального кэша…");
@@ -1285,6 +1455,7 @@ public class PlayerActivity extends AppCompatActivity {
                     synchronized (prefetchLock) {
                         if (generation != prefetchGeneration) break;
                         PlaybackCacheManager.Entry e = PlaybackCacheManager.get().entryFor(this, targetBase, pp, nn, info.version);
+                        if (info.size > 0) e.totalBytes = info.size;
                         if (e.finalFile.exists() && e.finalFile.length() > 0) continue;
                         task = new PlaybackCacheTask(this, e, true, null);
                         prefetchTask = task;
@@ -1714,6 +1885,99 @@ public class PlayerActivity extends AppCompatActivity {
         startSource(path, name, pos, mode, false, override);
     }
 
+    private void applySavedPlayerBrightness() {
+        int saved = Store.getPlayerBrightness(this);
+        if (saved > 0) setPlayerBrightness(saved, false);
+    }
+
+    private int getCurrentPlayerBrightnessPercent() {
+        if (playerBrightnessPercent > 0) return playerBrightnessPercent;
+        WindowManager.LayoutParams attrs = getWindow().getAttributes();
+        if (attrs.screenBrightness >= 0f) {
+            return Math.max(5, Math.min(100, Math.round(attrs.screenBrightness * 100f)));
+        }
+        try {
+            int system = Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS);
+            return Math.max(5, Math.min(100, Math.round(system * 100f / 255f)));
+        } catch (Throwable ignored) {
+            return 50;
+        }
+    }
+
+    private void setPlayerBrightness(int percent, boolean persist) {
+        int safe = Math.max(5, Math.min(100, percent));
+        WindowManager.LayoutParams attrs = getWindow().getAttributes();
+        attrs.screenBrightness = safe / 100f;
+        getWindow().setAttributes(attrs);
+        playerBrightnessPercent = safe;
+        if (persist) Store.setPlayerBrightness(this, safe);
+    }
+
+    private void scheduleHdrProbe(final int generation) {
+        if (Build.VERSION.SDK_INT < 24 || hdrProbeStarted || hdrType != HdrVideoProbe.TYPE_UNKNOWN) return;
+        if (!smoothSetting && !pictureEnhancementSetting) return;
+        Uri source = sourceMode == SourceMode.DIRECT_REMOTE ? Uri.parse(streamUrl(path)) : smoothMediaUri;
+        if (source == null) return;
+        final int epoch = ++hdrProbeEpoch;
+        hdrProbeStarted = true;
+        hdrProbeThread = new Thread(() -> {
+            HdrVideoProbe.Result result;
+            try (TransferCoordinator.Lease lease = TransferCoordinator.get().acquire(
+                    TransferCoordinator.Priority.PLAYBACK_METADATA, "HDR metadata")) {
+                result = HdrVideoProbe.read(source);
+            } catch (Throwable ignored) {
+                result = new HdrVideoProbe.Result(HdrVideoProbe.TYPE_UNKNOWN, "неизвестно");
+            }
+            final HdrVideoProbe.Result detected = result;
+            ui.post(() -> {
+                if (epoch != hdrProbeEpoch || !isCurrentGeneration(generation)) return;
+                hdrProbeStarted = false;
+                hdrProbeThread = null;
+                hdrType = detected.type;
+                hdrLabel = detected.label;
+                hdrDisplaySupported = detected.isHdr() && displaySupportsHdrType(detected.type);
+                PlayerDiagnostics.log(this, "hdr", "type=" + hdrLabel + " display=" + hdrDisplaySupported);
+                if (detected.isHdr()) protectHdrPlayback(generation);
+                updateTechnicalCard(true);
+            });
+        }, "HdrVideoProbe");
+        hdrProbeThread.setDaemon(true);
+        hdrProbeThread.start();
+    }
+
+    private void cancelHdrProbe() {
+        hdrProbeEpoch++;
+        hdrProbeStarted = false;
+        Thread thread = hdrProbeThread;
+        hdrProbeThread = null;
+        if (thread != null) thread.interrupt();
+    }
+
+    private void protectHdrPlayback(int generation) {
+        if (!isCurrentGeneration(generation) || player == null) return;
+        boolean smoothNeedsRestart = smoothRenderer != null || (smoothSetting && !smoothDisabledForSource);
+        boolean adjustNeedsRestart = pictureEnhancementSetting && !pictureEnhancementDisabledForSource
+                && !(pictureContrast == 100 && pictureBrightness == 100 && pictureSaturation == 100 && pictureGamma == 100);
+        smoothDisabledForSource = true;
+        pictureEnhancementDisabledForSource = true;
+        if (smoothSetting) smoothStatus = "Сглаживание отключено: " + hdrLabel;
+        if (!smoothNeedsRestart && !adjustNeedsRestart) return;
+
+        long position = Math.max(pendingResumeMs, Math.max(0, player.getTime()));
+        boolean paused = started && !player.isPlaying();
+        SourceMode mode = sourceMode;
+        String override = currentMediaOverrideUri;
+        PlayerDiagnostics.log(this, "hdr", "restart direct position=" + position + " smooth="
+                + smoothNeedsRestart + " adjust=" + adjustNeedsRestart);
+        flashInfo(hdrLabel + " · прямой HDR-вывод");
+        startSource(path, name, position, mode, true, override);
+        pauseAfterSmoothRestart = paused;
+    }
+
+    private boolean displaySupportsHdrType(int contentType) {
+        return HdrDisplaySupport.supports(this, contentType);
+    }
+
     private void attachVideoViewsIfNeeded() {
         if (player == null || videoViewsAttached || videoLayout == null || destroyed) return;
         try {
@@ -1785,6 +2049,10 @@ public class PlayerActivity extends AppCompatActivity {
                         mode = 2;
                         dragging = true;
                         dragStartVol = volume;
+                    } else if (Math.abs(totalY) > 40 && e1.getX() <= w / 2f) {
+                        mode = 3;
+                        dragging = true;
+                        dragStartBrightness = getCurrentPlayerBrightnessPercent();
                     } else {
                         return false;
                     }
@@ -1803,6 +2071,11 @@ public class PlayerActivity extends AppCompatActivity {
                     if (player != null) player.setVolume(nv);
                     Store.setVolume(PlayerActivity.this, nv);
                     flashInfoSticky("🔊 " + nv + "%");
+                } else if (mode == 3) {
+                    int brightness = dragStartBrightness - (int) (totalY / h * 120);
+                    brightness = Math.max(5, Math.min(100, brightness));
+                    setPlayerBrightness(brightness, false);
+                    flashInfoSticky("☀ " + brightness + "%");
                 }
                 return true;
             }
@@ -1824,7 +2097,13 @@ public class PlayerActivity extends AppCompatActivity {
                     hideControls();
                 }
                 if (dragging && mode == 1 && player != null) requestSeek(seekPreview);
-                if (dragging) gestureInfo.setVisibility(View.GONE);
+                if (dragging && mode == 3 && playerBrightnessPercent > 0) {
+                    Store.setPlayerBrightness(PlayerActivity.this, playerBrightnessPercent);
+                }
+                if (dragging) {
+                    ui.removeCallbacks(hideInfo);
+                    ui.postDelayed(hideInfo, (mode == 2 || mode == 3) ? 850L : 650L);
+                }
                 dragging = false;
                 mode = 0;
                 ignoreGestureSequence = false;
@@ -1921,6 +2200,15 @@ public class PlayerActivity extends AppCompatActivity {
                 .append(" · ").append(speeds[speedIdx]).append('x')
                 .append(" · Vout ").append(currentVoutCount);
         if (smoothSetting) text.append("\n").append(smoothStatus);
+        if (pictureEnhancementSetting) {
+            if (pictureEnhancementDisabledForSource) text.append("\nулучшение изображения: выкл для HDR");
+            else text.append("\nизображение: C ").append(pictureContrast).append("% · B ")
+                    .append(pictureBrightness).append("% · S ").append(pictureSaturation)
+                    .append("% · γ ").append(pictureGamma).append('%');
+        }
+        if (hdrType >= HdrVideoProbe.TYPE_HDR10) {
+            text.append("\n").append(hdrLabel).append(hdrDisplaySupported ? " · HDR-экран" : " · экран без HDR");
+        }
         text.append("\nсоединения приложения: ").append(TransferCoordinator.get().activeRemoteTransfers())
                 .append('/').append(TransferCoordinator.get().maxRemoteTransfers());
         technicalCard.setText(text.toString());
@@ -2115,9 +2403,13 @@ public class PlayerActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         boolean setting = Store.getSmoothVideo(this);
-        if (setting != smoothSetting) {
+        boolean smoothChanged = setting != smoothSetting;
+        boolean pictureChanged = refreshPictureSettings();
+        if (smoothChanged || pictureChanged) {
             smoothSetting = setting;
-            smoothDisabledForSource = false;
+            boolean hdrProtected = hdrType >= HdrVideoProbe.TYPE_HDR10;
+            smoothDisabledForSource = hdrProtected;
+            pictureEnhancementDisabledForSource = hdrProtected;
             if (player != null) restartCurrentSourceForDecoder();
         }
         updateLongJumpButton();
@@ -2183,6 +2475,7 @@ public class PlayerActivity extends AppCompatActivity {
     public void onBackPressed() {
         PlayerDiagnostics.log(this, "lifecycle", "back pos=" + currentMs + " source=" + sourceMode);
         playbackGeneration++;
+        cancelHdrProbe();
         setPlaybackPhase(PlaybackPhase.STOPPING);
         savePosition(true);
         releaseCurrentPlayer();
@@ -2198,6 +2491,7 @@ public class PlayerActivity extends AppCompatActivity {
         destroyed = true;
         if (batteryMonitor != null) batteryMonitor.stop();
         playbackGeneration++;
+        cancelHdrProbe();
         setPlaybackPhase(PlaybackPhase.DESTROYED);
         super.onDestroy();
         ui.removeCallbacksAndMessages(null);

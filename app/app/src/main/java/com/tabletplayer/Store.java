@@ -27,6 +27,27 @@ public class Store {
     static final String KEY_PLAYBACK_CACHE_THREADS = "playback_cache_threads";
     static final String KEY_PLAYBACK_PREFETCH_THREADS = "playback_prefetch_threads";
     static final String KEY_CONTENT_LOAD_MODE = "content_load_mode";
+    static final String KEY_PLAYER_BRIGHTNESS = "player_brightness_percent";
+    static final String KEY_PICTURE_ENHANCEMENT = "picture_enhancement";
+    static final String KEY_PICTURE_PRESET = "picture_preset";
+    static final String KEY_PICTURE_CONTRAST = "picture_contrast";
+    static final String KEY_PICTURE_BRIGHTNESS = "picture_brightness";
+    static final String KEY_PICTURE_SATURATION = "picture_saturation";
+    static final String KEY_PICTURE_GAMMA = "picture_gamma";
+
+    public static final int PICTURE_PRESET_ORIGINAL = 0;
+    public static final int PICTURE_PRESET_CINEMA = 1;
+    public static final int PICTURE_PRESET_VIVID = 2;
+    public static final int PICTURE_PRESET_CUSTOM = 3;
+
+    public static final int PICTURE_CONTRAST_MIN = 80;
+    public static final int PICTURE_CONTRAST_MAX = 130;
+    public static final int PICTURE_BRIGHTNESS_MIN = 90;
+    public static final int PICTURE_BRIGHTNESS_MAX = 110;
+    public static final int PICTURE_SATURATION_MIN = 80;
+    public static final int PICTURE_SATURATION_MAX = 130;
+    public static final int PICTURE_GAMMA_MIN = 80;
+    public static final int PICTURE_GAMMA_MAX = 120;
 
     public static final int CONTENT_LOAD_AUTO = 0;
     public static final int CONTENT_LOAD_LOCAL_CACHE = 1;
@@ -143,6 +164,94 @@ public class Store {
 
     public static void setSmoothVideo(Context c, boolean enabled) {
         App.prefs(c).edit().putBoolean(KEY_SMOOTH_VIDEO, enabled).apply();
+    }
+
+    public static int getPlayerBrightness(Context c) {
+        int value = App.prefs(c).getInt(KEY_PLAYER_BRIGHTNESS, -1);
+        return value < 0 ? -1 : Math.max(5, Math.min(100, value));
+    }
+
+    public static void setPlayerBrightness(Context c, int percent) {
+        App.prefs(c).edit().putInt(KEY_PLAYER_BRIGHTNESS, Math.max(5, Math.min(100, percent))).apply();
+    }
+
+    public static boolean getPictureEnhancement(Context c) {
+        return App.prefs(c).getBoolean(KEY_PICTURE_ENHANCEMENT, false);
+    }
+
+    public static void setPictureEnhancement(Context c, boolean enabled) {
+        App.prefs(c).edit().putBoolean(KEY_PICTURE_ENHANCEMENT, enabled).apply();
+    }
+
+    public static int getPicturePreset(Context c) {
+        int value = App.prefs(c).getInt(KEY_PICTURE_PRESET, PICTURE_PRESET_ORIGINAL);
+        return Math.max(PICTURE_PRESET_ORIGINAL, Math.min(PICTURE_PRESET_CUSTOM, value));
+    }
+
+    public static void setPicturePreset(Context c, int preset) {
+        App.prefs(c).edit().putInt(KEY_PICTURE_PRESET,
+                Math.max(PICTURE_PRESET_ORIGINAL, Math.min(PICTURE_PRESET_CUSTOM, preset))).apply();
+    }
+
+    public static int getPictureContrast(Context c) {
+        return clamp(App.prefs(c).getInt(KEY_PICTURE_CONTRAST, 100), PICTURE_CONTRAST_MIN, PICTURE_CONTRAST_MAX);
+    }
+
+    public static int getPictureBrightness(Context c) {
+        return clamp(App.prefs(c).getInt(KEY_PICTURE_BRIGHTNESS, 100), PICTURE_BRIGHTNESS_MIN, PICTURE_BRIGHTNESS_MAX);
+    }
+
+    public static int getPictureSaturation(Context c) {
+        return clamp(App.prefs(c).getInt(KEY_PICTURE_SATURATION, 100), PICTURE_SATURATION_MIN, PICTURE_SATURATION_MAX);
+    }
+
+    public static int getPictureGamma(Context c) {
+        return clamp(App.prefs(c).getInt(KEY_PICTURE_GAMMA, 100), PICTURE_GAMMA_MIN, PICTURE_GAMMA_MAX);
+    }
+
+    public static void setPictureValues(Context c, int contrast, int brightness, int saturation, int gamma) {
+        App.prefs(c).edit()
+                .putInt(KEY_PICTURE_CONTRAST, clamp(contrast, PICTURE_CONTRAST_MIN, PICTURE_CONTRAST_MAX))
+                .putInt(KEY_PICTURE_BRIGHTNESS, clamp(brightness, PICTURE_BRIGHTNESS_MIN, PICTURE_BRIGHTNESS_MAX))
+                .putInt(KEY_PICTURE_SATURATION, clamp(saturation, PICTURE_SATURATION_MIN, PICTURE_SATURATION_MAX))
+                .putInt(KEY_PICTURE_GAMMA, clamp(gamma, PICTURE_GAMMA_MIN, PICTURE_GAMMA_MAX))
+                .apply();
+    }
+
+    public static void applyPicturePreset(Context c, int preset) {
+        int safePreset = Math.max(PICTURE_PRESET_ORIGINAL, Math.min(PICTURE_PRESET_CUSTOM, preset));
+        if (safePreset == PICTURE_PRESET_CUSTOM) {
+            setPicturePreset(c, safePreset);
+            return;
+        }
+        int contrast = 100, brightness = 100, saturation = 100, gamma = 100;
+        if (safePreset == PICTURE_PRESET_CINEMA) {
+            contrast = 108; brightness = 99; saturation = 104; gamma = 96;
+        } else if (safePreset == PICTURE_PRESET_VIVID) {
+            contrast = 116; brightness = 102; saturation = 118; gamma = 100;
+        }
+        App.prefs(c).edit()
+                .putInt(KEY_PICTURE_PRESET, safePreset)
+                .putInt(KEY_PICTURE_CONTRAST, contrast)
+                .putInt(KEY_PICTURE_BRIGHTNESS, brightness)
+                .putInt(KEY_PICTURE_SATURATION, saturation)
+                .putInt(KEY_PICTURE_GAMMA, gamma)
+                .apply();
+    }
+
+    public static void resetPictureSettings(Context c) {
+        App.prefs(c).edit()
+                .putBoolean(KEY_PICTURE_ENHANCEMENT, false)
+                .putInt(KEY_PICTURE_PRESET, PICTURE_PRESET_ORIGINAL)
+                .putInt(KEY_PICTURE_CONTRAST, 100)
+                .putInt(KEY_PICTURE_BRIGHTNESS, 100)
+                .putInt(KEY_PICTURE_SATURATION, 100)
+                .putInt(KEY_PICTURE_GAMMA, 100)
+                .apply();
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private static int prefsJump(Context c) {

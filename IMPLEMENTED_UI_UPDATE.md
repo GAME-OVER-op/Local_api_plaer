@@ -68,3 +68,20 @@ Validation for this refresh:
 - All custom layout/drawable/anim/color/string/style/menu references resolve.
 - Modified Java files pass a parser-level `javac` syntax smoke test; diagnostics are only unresolved Android classes because this environment has no Android SDK jar.
 - A full Gradle Android build cannot be executed in this sandbox because Gradle and the Android SDK are not installed. The repository CI already provisions Gradle 8.7, Android 34 and build-tools 34.0.0 and remains the authoritative full build check.
+
+## Post-update playback fixes
+
+- Browser/server back button now uses a centered vector icon instead of a text glyph, removing baseline drift.
+- Player volume feedback remains visible briefly after swipe release and is also shown for physical volume keys while player chrome is hidden.
+- Frame-generation playback now retries delayed LibVLC audio-track initialization, reasserts audio focus/volume, and applies audio delay only when the audio ES is ready.
+- Remote videos up to and including 50 MiB are fully downloaded before playback. Their known `/file` size is reused, they use a single main download chunk, and playback starts directly from the finalized local cache file without the old prepare/background hand-off.
+
+## Picture controls and HDR protection (4.4)
+
+- Added left-half vertical brightness gesture in the player. It adjusts only the player window (5–100%), leaves Android system brightness untouched, persists the last player value, and shows `☀ N%` even when playback chrome is hidden.
+- Right-half vertical swipe remains volume and horizontal swipe remains seek; gesture direction is locked after the movement threshold to avoid diagonal conflicts.
+- Added Settings → Image with an enable switch, Original/Cinema/Vivid/Custom presets and bounded contrast, image brightness, saturation and gamma controls.
+- Picture correction uses VLC's `adjust` video filter with conservative ranges rather than pretending SDR contrast is HDR.
+- Added automatic HDR metadata probing for HDR10/PQ, HLG and Dolby Vision on Android 7.0+. When HDR is detected, frame generation and SDR picture correction are disabled for that source and playback is restarted on VLC's direct video surface to preserve the HDR path.
+- HDR display capability is checked on API 24+ in an isolated helper so minSdk 19 devices do not load newer display APIs.
+- If VLC cannot start with picture adjustment, the player performs a one-time safe retry for that source without the adjustment filter instead of leaving playback unusable.

@@ -32,6 +32,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     }
 
     private static final long MB = 1024L * 1024L;
+    public static final long WHOLE_FILE_LIMIT_BYTES = 50L * MB;
     public static final long START_PERCENT_LIMIT = 30L;
     public static final long START_MAX_BYTES = 300L * MB;
     public static final long MIN_EARLY_START_BYTES = 64L * MB;
@@ -149,6 +150,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     public int workerCount() {
         long total = totalBytes();
+        if (isWholeFileBeforePlayback(total)) return 1;
         int cap = prefetch ? Store.getPlaybackPrefetchThreads(context) : Store.getPlaybackCacheThreads(context);
         int auto = prefetch ? 1 : autoWorkerCount(total);
         if (!prefetch) return Math.max(3, Math.min(cap, auto));
@@ -158,9 +160,14 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     public long prepareTargetBytes() {
         long total = totalBytes();
         if (total <= 0) return START_MAX_BYTES;
+        if (isWholeFileBeforePlayback(total)) return total;
         long percent = total * START_PERCENT_LIMIT / 100L;
         if (percent <= 0) percent = total;
         return Math.min(percent, START_MAX_BYTES);
+    }
+
+    private static boolean isWholeFileBeforePlayback(long total) {
+        return total > 0 && total <= WHOLE_FILE_LIMIT_BYTES;
     }
 
     public int percent() {
@@ -286,6 +293,9 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     }
 
     private long fetchTotalBytes() throws Exception {
+        synchronized (lock) {
+            if (entry.totalBytes > 0) return entry.totalBytes;
+        }
         HttpURLConnection c = null;
         TransferCoordinator.Lease metaLease = null;
         try {
@@ -487,7 +497,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     }
 
     private int maxActiveWorkersLocked(long total) {
-        if (prefetch) return 1;
+        if (prefetch || isWholeFileBeforePlayback(total)) return 1;
         int configured = Store.getPlaybackCacheThreads(context);
         if (!readyNotified) return Math.max(3, Math.min(configured, autoWorkerCount(total)));
         int steady;
@@ -779,6 +789,9 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
 
     private void maybeNotifyReady() {
         if (prefetch || readyNotified || fallbackNotified || cancelled) return;
+        // Small videos are intentionally finalized completely before playback. This avoids
+        // the old prepare -> background-download hand-off and its extra HTTP/TCP churn.
+        if (isWholeFileBeforePlayback(totalBytes()) && !complete) return;
         long available = downloadedBytes();
         long target = prepareTargetBytes();
         long elapsed = System.currentTimeMillis() - startAtMs;
@@ -809,6 +822,11 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
         long speed = recentSpeedBytesPerSec();
         long available = downloadedBytes();
         long cached = cachedBytes();
+        if (isWholeFileBeforePlayback(totalBytes())) {
+            // <= 50 MiB is deliberately a full-download-before-play path. Do not fall back
+            // to streaming during the normal soft timeout while the one-file transfer moves.
+            if (elapsed < PREPARE_HARD_TIMEOUT_MS || speed > 0 || cached >= totalBytes()) return;
+        }
         if (speed >= MIN_KEEP_WAIT_SPEED_BYTES_PER_SEC && cached > 0) return;
         if (elapsed < PREPARE_HARD_TIMEOUT_MS && (available >= 8L * MB || cached >= 16L * MB)) return;
         notifyFallback("подготовка не продвигается: скорость низкая или нет непрерывного кэша");
@@ -964,6 +982,7 @@ public final class PlaybackCacheTask implements PlaybackProxyServer.DataSource, 
     }
 
     private static long chunkSizeFor(long total) {
+        if (isWholeFileBeforePlayback(total)) return total;
         if (total <= 256L * MB) return 2L * MB;
         if (total <= 1024L * MB) return 6L * MB;
         if (total <= 4L * 1024L * MB) return 12L * MB;

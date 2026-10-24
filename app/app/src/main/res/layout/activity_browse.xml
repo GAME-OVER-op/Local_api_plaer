@@ -17,15 +17,15 @@
         android:gravity="center_vertical"
         android:paddingLeft="12dp"
         android:paddingRight="14dp">
-        <Button
+        <androidx.appcompat.widget.AppCompatImageButton
             android:id="@+id/servers_btn"
-            style="@style/IconButton"
             android:layout_width="44dp"
             android:layout_height="44dp"
-            android:text="‹"
-            android:textColor="@color/text_primary"
-            android:textSize="28sp"
-            android:contentDescription="К серверам" />
+            android:background="@drawable/icon_button_bg"
+            android:contentDescription="К серверам"
+            android:padding="10dp"
+            app:srcCompat="@drawable/ic_back"
+            app:tint="@color/primary" />
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
